@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import os
 import threading
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
+# Stubs for legacy modules that reference these paths (not used in cloud version)
+DATA_DIR = Path("/tmp/fishing_log_data")
+PROJECT_ROOT = Path("/tmp")
 
 # ---------------------------------------------------------------------------
 # Per-session user context (thread-local so each Streamlit session is isolated)
