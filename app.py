@@ -119,7 +119,12 @@ def _fmt_len(value) -> str:
     """Format a length as e.g. 31\" or 24.5\" (blank if none/zero)."""
     if value in (None, "", 0, 0.0):
         return ""
-    f = float(value)
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if f != f or f == 0:  # NaN check (NaN != NaN)
+        return ""
     return (str(int(f)) if f == int(f) else str(f)) + '"'
 
 # Display labels for the session columns shown in tables.
@@ -570,6 +575,8 @@ def _dwr_nudge(sid: int):
     if not detail:
         return
     report = dwr_report.summarize(detail)
+    already_filed = bool(detail.get("dwr_filed"))
+
     with st.container(border=True):
         hcol, xcol = st.columns([11, 1])
         hcol.markdown(
@@ -582,24 +589,29 @@ def _dwr_nudge(sid: int):
         if xcol.button("✕", key=f"dwr_nx_{sid}", help="Dismiss"):
             st.session_state.pop("pending_dwr_sid", None)
             st.rerun()
-        btn_col, chk_col = st.columns([3, 2])
-        btn_col.link_button(
-            "🎣 Open pre-filled DWR form",
-            dwr_report.prefilled_url(detail),
-            type="primary",
-        )
-        fk = f"dwr_nf_{sid}"
-        if fk not in st.session_state:
-            st.session_state[fk] = bool(detail.get("dwr_filed"))
 
-        def _toggle(_sid=sid, _key=fk):
-            n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
-            if n == 0:
-                st.session_state.pop(_key, None)  # revert display to DB value
-                st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
-            _refresh()
-
-        chk_col.checkbox("✅ Mark as filed to DWR", key=fk, on_change=_toggle)
+        if already_filed:
+            st.success("✅ Already filed to DWR — you're all set.")
+        else:
+            st.caption(
+                "Your trip is already saved. "
+                "**Step 1:** open the pre-filled form and submit it. "
+                "**Step 2:** come back here and click **Mark as filed** so the dashboard clears."
+            )
+            link_col, btn_col = st.columns([3, 2])
+            link_col.link_button(
+                "🎣 Step 1 — Open pre-filled DWR form",
+                dwr_report.prefilled_url(detail),
+                type="primary",
+            )
+            if btn_col.button("✅ Step 2 — Mark as filed", key=f"dwr_file_{sid}"):
+                n = data_entry.set_dwr_filed(sid, True)
+                if n > 0:
+                    st.session_state.pop("pending_dwr_sid", None)
+                    _refresh()
+                    st.rerun()
+                else:
+                    st.error("Could not mark as filed — try the checkbox in Browse & Search.")
 
 
 def page_log_session():

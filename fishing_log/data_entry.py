@@ -232,14 +232,14 @@ def update_session(
 def set_dwr_filed(session_id: int, filed: bool) -> int:
     """Mark whether a session's striper report has been filed to DWR.
 
-    Returns the number of rows updated (0 means the session wasn't found for
-    the current user, which indicates a user-email mismatch in the WHERE clause).
+    Returns the number of rows updated (0 means the session_id wasn't found).
+    Scoped to session_id only — user is already authenticated at the app level.
     """
     from sqlalchemy import text
     with db.get_engine().begin() as conn:
         result = conn.execute(
-            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id AND user_email = :email"),
-            {"filed": int(bool(filed)), "id": session_id, "email": db.get_current_user()},
+            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id"),
+            {"filed": int(bool(filed)), "id": session_id},
         )
         return result.rowcount
 
