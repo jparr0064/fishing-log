@@ -375,7 +375,6 @@ def _spots_picker(state_key: str, map_key: str):
         # trigger a map.setView() call after every render, which animates the map
         # and can cause Leaflet to miss the next click event.
         fmap = folium.Map(location=view_center, zoom_start=view_zoom)
-        fmap._id = map_key  # stable HTML id across reruns → Leaflet doesn't reinitialize on zoom
         map_view.draw_route(fmap, spots)
         result = st_folium(
             fmap,
