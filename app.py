@@ -14,13 +14,23 @@ import altair as alt
 import folium
 import pandas as pd
 import streamlit as st
-from PIL import Image
-from streamlit_cropper import st_cropper
 from streamlit_folium import st_folium
 
 from fishing_log import (
     analytics, backup, data_entry, database as db, dwr_report, map_view, media, search,
 )
+
+try:
+    from PIL import Image
+    _PIL_OK = True
+except ImportError:
+    _PIL_OK = False
+
+try:
+    from streamlit_cropper import st_cropper as _st_cropper
+    _CROPPER_OK = True
+except Exception:
+    _CROPPER_OK = False
 
 # Optional GPS button component; app still works if it isn't installed.
 try:
