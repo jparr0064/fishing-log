@@ -367,7 +367,6 @@ def _spots_picker(state_key: str, map_key: str):
     with map_col:
         fmap = folium.Map(location=view_center, zoom_start=view_zoom)
         map_view.draw_route(fmap, spots)
-        fmap.add_child(folium.LatLngPopup())
         result = st_folium(
             fmap,
             center=list(view_center),
