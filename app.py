@@ -617,10 +617,6 @@ def _dwr_nudge(sid: int):
 def page_log_session():
     st.header("➕ Log a Session")
 
-    # DWR nudge for the session just saved — stays until dismissed or replaced.
-    if "pending_dwr_sid" in st.session_state:
-        _dwr_nudge(st.session_state["pending_dwr_sid"])
-
     # Spot picker and photo editor live OUTSIDE the form so their controls
     # can rerun interactively (map clicks, rotate/crop).
     _spots_picker("spots", "loc_picker")
@@ -730,12 +726,19 @@ def page_log_session():
             st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
             st.session_state["pending_dwr_sid"] = new_id
             photo_note = f" ({len(saved_photos)} photo(s))" if saved_photos else ""
-            st.success(
-                f"Saved session #{new_id} — {total} fish, {len(spots)} spot(s) "
+            st.session_state["log_saved_msg"] = (
+                f"✅ Session saved — {total} fish, {len(spots)} spot(s) "
                 f"at {location_name}{photo_note}."
             )
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
+
+    # Show save confirmation + DWR nudge below the form so the form stays
+    # ready at the top for the next entry.
+    if msg := st.session_state.pop("log_saved_msg", None):
+        st.success(msg)
+    if "pending_dwr_sid" in st.session_state:
+        _dwr_nudge(st.session_state["pending_dwr_sid"])
 
 
 def _filter_controls(key_prefix: str):
@@ -859,6 +862,13 @@ def _render_session_detail(detail: dict, sid: int):
             "species": "Species", "length": "Length (in)", "weight": "Weight (lb)",
             "kept": "Kept?", "depth": "Depth (ft)",
         })
+        fish_df["Kept?"] = fish_df["Kept?"].apply(lambda x: "✓" if x else "")
+        fish_df["Length (in)"] = fish_df["Length (in)"].apply(
+            lambda x: "" if not x else (str(int(x)) if float(x) == int(float(x)) else str(x))
+        )
+        fish_df["Weight (lb)"] = fish_df["Weight (lb)"].apply(
+            lambda x: "" if not x else (str(int(x)) if float(x) == int(float(x)) else f"{float(x):.1f}")
+        )
         if "Depth (ft)" in fish_df.columns:
             fish_df["Depth (ft)"] = fish_df["Depth (ft)"].apply(
                 lambda x: "" if (x is None or (isinstance(x, float) and x != x) or x == 0) else f"{x:.0f}"
