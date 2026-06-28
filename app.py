@@ -335,7 +335,7 @@ def _spots_picker(state_key: str, map_key: str):
     zoom_key, center_key = f"{map_key}_zoom", f"{map_key}_center"
     default_center = (spots[0]["lat"], spots[0]["lon"]) if spots else (DEFAULT_LAT, DEFAULT_LON)
     view_center = st.session_state.get(center_key, default_center)
-    view_zoom = st.session_state.get(zoom_key, 13)
+    view_zoom = st.session_state.get(zoom_key, 15)
 
     hdr_col, fs_col = st.columns([5, 1])
     hdr_col.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
@@ -380,23 +380,15 @@ def _spots_picker(state_key: str, map_key: str):
             fmap,
             height=map_height,
             use_container_width=True,
-            returned_objects=["last_clicked", "center", "zoom"],
+            returned_objects=["last_clicked"],
             key=map_key,
         )
-        if result:
-            if result.get("zoom") is not None:
-                st.session_state[zoom_key] = result["zoom"]
-            ctr = result.get("center")
-            if isinstance(ctr, dict) and ctr.get("lat") is not None:
-                st.session_state[center_key] = (ctr["lat"], ctr["lng"])
-            elif isinstance(ctr, (list, tuple)) and len(ctr) == 2:
-                st.session_state[center_key] = (ctr[0], ctr[1])
-            if result.get("last_clicked"):
-                lc = result["last_clicked"]
-                st.session_state[center_key] = (lc["lat"], lc["lng"])
-                if _append_spot(spots, lc["lat"], lc["lng"]):
-                    st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
-                    st.rerun()
+        if result and result.get("last_clicked"):
+            lc = result["last_clicked"]
+            st.session_state[center_key] = (lc["lat"], lc["lng"])
+            if _append_spot(spots, lc["lat"], lc["lng"]):
+                st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
+                st.rerun()
 
     # Per-spot "fish caught here" toggles.
     if spots:
