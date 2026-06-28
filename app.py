@@ -309,7 +309,16 @@ def _clear_spot_state(state_key: str, map_key: str):
     for i in range(n):
         st.session_state.pop(f"{map_key}_c{i}", None)
     st.session_state.pop(state_key, None)
-    st.session_state.pop(f"{map_key}_base", None)  # reset cached base map
+
+
+@st.cache_resource
+def _base_spot_map(key: str) -> folium.Map:
+    """Stable base map for the spot picker, cached so its folium UUID never
+    changes between reruns. st_folium sees identical HTML every run and skips
+    Leaflet reinitialisation, which is what preserves the user's zoom/pan."""
+    fmap = folium.Map(location=(DEFAULT_LAT, DEFAULT_LON), zoom_start=14)
+    fmap.add_child(folium.LatLngPopup())
+    return fmap
 
 
 def _spots_picker(state_key: str, map_key: str):
@@ -358,24 +367,14 @@ def _spots_picker(state_key: str, map_key: str):
             st.rerun()
 
     with map_col:
-        # Cache the base map in session_state so its folium _id never changes
-        # between reruns. A stable _id means st_folium won't reinitialize Leaflet,
-        # preserving the user's zoom/pan. Spots go in a FeatureGroup that updates
-        # separately without triggering a full map reinit.
-        base_key = f"{map_key}_base"
-        if base_key not in st.session_state:
-            init_center = (spots[0]["lat"], spots[0]["lon"]) if spots else (DEFAULT_LAT, DEFAULT_LON)
-            fmap = folium.Map(location=init_center, zoom_start=14)
-            fmap.add_child(folium.LatLngPopup())
-            st.session_state[base_key] = fmap
-        fmap = st.session_state[base_key]
-
+        # Use the cached base map so its folium _id is stable across reruns.
+        # Spots go in a FeatureGroup that updates without reinitialising Leaflet.
         fg = folium.FeatureGroup(name="spots")
         if spots:
             map_view.draw_route(fg, spots)
 
         result = st_folium(
-            fmap,
+            _base_spot_map(map_key),
             feature_group_to_add=fg,
             height=map_height,
             use_container_width=True,
