@@ -309,6 +309,7 @@ def _clear_spot_state(state_key: str, map_key: str):
     for i in range(n):
         st.session_state.pop(f"{map_key}_c{i}", None)
     st.session_state.pop(state_key, None)
+    st.session_state.pop(f"{map_key}_base", None)  # reset cached base map
 
 
 def _spots_picker(state_key: str, map_key: str):
@@ -318,26 +319,25 @@ def _spots_picker(state_key: str, map_key: str):
     st.session_state.setdefault(state_key, [])
     spots = st.session_state[state_key]
 
-    # IMPORTANT: sync each spot's caught flag from its checkbox state BEFORE the
-    # map is drawn, so a just-toggled box is reflected on the map this same run.
+    # Sync each spot's caught flag from its checkbox state BEFORE drawing the map.
     for i, sp in enumerate(spots):
         ck = f"{map_key}_c{i}"
         if ck not in st.session_state:
             st.session_state[ck] = bool(sp.get("caught"))
         sp["caught"] = bool(st.session_state[ck])
 
-    # Persist the map view (zoom + center) across reruns so interacting/saving
-    # doesn't snap the map back to a fixed zoom.
-    zoom_key, center_key = f"{map_key}_zoom", f"{map_key}_center"
-    default_center = (spots[0]["lat"], spots[0]["lon"]) if spots else (DEFAULT_LAT, DEFAULT_LON)
-    view_center = st.session_state.get(center_key, default_center)
-    view_zoom = st.session_state.get(zoom_key, map_view.DEFAULT_ZOOM)
-
     hdr_col, fs_col = st.columns([5, 1])
     hdr_col.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
                      "click again to add each spot along your troll.")
     fullscreen = fs_col.checkbox("⛶ Full screen", key=f"{map_key}_fs", value=False)
-    map_height = 720 if fullscreen else 480
+    map_height = 900 if fullscreen else 480
+
+    if fullscreen:
+        st.markdown(
+            "<style>.block-container{max-width:100%!important;padding-left:1rem!important;"
+            "padding-right:1rem!important}</style>",
+            unsafe_allow_html=True,
+        )
 
     map_col, side_col = st.columns([5, 1]) if fullscreen else st.columns([4, 1])
 
@@ -358,33 +358,35 @@ def _spots_picker(state_key: str, map_key: str):
             st.rerun()
 
     with map_col:
-        fmap = folium.Map(location=view_center, zoom_start=view_zoom)
-        map_view.draw_route(fmap, spots)
-        fmap.add_child(folium.LatLngPopup())
+        # Cache the base map in session_state so its folium _id never changes
+        # between reruns. A stable _id means st_folium won't reinitialize Leaflet,
+        # preserving the user's zoom/pan. Spots go in a FeatureGroup that updates
+        # separately without triggering a full map reinit.
+        base_key = f"{map_key}_base"
+        if base_key not in st.session_state:
+            init_center = (spots[0]["lat"], spots[0]["lon"]) if spots else (DEFAULT_LAT, DEFAULT_LON)
+            fmap = folium.Map(location=init_center, zoom_start=14)
+            fmap.add_child(folium.LatLngPopup())
+            st.session_state[base_key] = fmap
+        fmap = st.session_state[base_key]
+
+        fg = folium.FeatureGroup(name="spots")
+        if spots:
+            map_view.draw_route(fg, spots)
+
         result = st_folium(
             fmap,
-            center=list(view_center),
-            zoom=view_zoom,
+            feature_group_to_add=fg,
             height=map_height,
             use_container_width=True,
-            returned_objects=["last_clicked", "center", "zoom"],
+            returned_objects=["last_clicked"],
             key=map_key,
         )
-        if result:
-            if result.get("zoom") is not None:
-                st.session_state[zoom_key] = result["zoom"]
-            ctr = result.get("center")
-            if isinstance(ctr, dict) and ctr.get("lat") is not None:
-                st.session_state[center_key] = (ctr["lat"], ctr["lng"])
-            elif isinstance(ctr, (list, tuple)) and len(ctr) == 2:
-                st.session_state[center_key] = (ctr[0], ctr[1])
-            if result.get("last_clicked"):
-                lc = result["last_clicked"]
-                st.session_state[center_key] = (lc["lat"], lc["lng"])
-                _append_spot(spots, lc["lat"], lc["lng"])
+        if result and result.get("last_clicked"):
+            lc = result["last_clicked"]
+            _append_spot(spots, lc["lat"], lc["lng"])
 
-    # Per-spot "fish caught here" toggles (no value= so the widget reads its own
-    # pre-seeded session_state; the top-of-function sync keeps the map in step).
+    # Per-spot "fish caught here" toggles.
     if spots:
         st.caption("Mark spots where you caught a fish (shown as a 🐟 on the map):")
         cols = st.columns(min(4, len(spots)))
