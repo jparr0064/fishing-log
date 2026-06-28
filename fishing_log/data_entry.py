@@ -229,14 +229,19 @@ def update_session(
         db.insert_spots(session_id, cleaned_spots)
 
 
-def set_dwr_filed(session_id: int, filed: bool) -> None:
-    """Mark whether a session's striper report has been filed to DWR."""
+def set_dwr_filed(session_id: int, filed: bool) -> int:
+    """Mark whether a session's striper report has been filed to DWR.
+
+    Returns the number of rows updated (0 means the session wasn't found for
+    the current user, which indicates a user-email mismatch in the WHERE clause).
+    """
     from sqlalchemy import text
     with db.get_engine().begin() as conn:
-        conn.execute(
+        result = conn.execute(
             text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id AND user_email = :email"),
             {"filed": int(bool(filed)), "id": session_id, "email": db.get_current_user()},
         )
+        return result.rowcount
 
 
 def delete_session(session_id: int) -> None:

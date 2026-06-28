@@ -253,7 +253,7 @@ def page_dashboard():
     # DWR filing nudge
     all_df = search.list_sessions()
     if not all_df.empty and "dwr_filed" in all_df.columns:
-        unfiled = all_df[all_df["dwr_filed"] == 0]
+        unfiled = all_df[~all_df["dwr_filed"].fillna(0).astype(bool)]
         if not unfiled.empty:
             with st.container(border=True):
                 st.markdown(f"**📋 {len(unfiled)} trip(s) not yet filed to DWR**")
@@ -593,7 +593,10 @@ def _dwr_nudge(sid: int):
             st.session_state[fk] = bool(detail.get("dwr_filed"))
 
         def _toggle(_sid=sid, _key=fk):
-            data_entry.set_dwr_filed(_sid, st.session_state[_key])
+            n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+            if n == 0:
+                st.session_state.pop(_key, None)  # revert display to DB value
+                st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
             _refresh()
 
         chk_col.checkbox("✅ Mark as filed to DWR", key=fk, on_change=_toggle)
@@ -872,7 +875,10 @@ def _render_session_detail(detail: dict, sid: int):
             st.session_state[fk] = bool(detail.get("dwr_filed"))
 
         def _toggle_filed(_sid=sid, _key=fk):
-            data_entry.set_dwr_filed(_sid, st.session_state[_key])
+            n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+            if n == 0:
+                st.session_state.pop(_key, None)  # revert display to DB value
+                st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
             _refresh()
 
         fcol.checkbox("✅ Filed to DWR", key=fk, on_change=_toggle_filed)
