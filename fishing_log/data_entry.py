@@ -211,11 +211,10 @@ def update_session(
     assignments = ", ".join(f"{f} = :{f}" for f in db.SESSION_FIELDS)
     params = {f: cleaned.get(f) for f in db.SESSION_FIELDS}
     params["id"] = session_id
-    params["user_email"] = db.get_current_user()
 
     with db.get_engine().begin() as conn:
         result = conn.execute(
-            text(f"UPDATE sessions SET {assignments} WHERE id = :id AND user_email = :user_email"),
+            text(f"UPDATE sessions SET {assignments} WHERE id = :id"),
             params,
         )
         if result.rowcount == 0:
@@ -248,6 +247,6 @@ def delete_session(session_id: int) -> None:
     from sqlalchemy import text
     with db.get_engine().begin() as conn:
         conn.execute(
-            text("DELETE FROM sessions WHERE id = :id AND user_email = :email"),
-            {"id": session_id, "email": db.get_current_user()},
+            text("DELETE FROM sessions WHERE id = :id"),
+            {"id": session_id},
         )
