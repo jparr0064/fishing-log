@@ -129,11 +129,41 @@ SESSION_DISPLAY_COLS = {
 }
 
 
+def _get_user_email() -> str:
+    """Get the logged-in user's email. Uses Streamlit viewer auth on Cloud,
+    falls back to a simple email form for local development."""
+    # Streamlit Community Cloud viewer auth (set via app settings → Viewer auth)
+    try:
+        user = st.experimental_user
+        if user and getattr(user, "email", None):
+            return user.email.lower().strip()
+    except Exception:
+        pass
+
+    # Local dev fallback: simple one-time email form
+    if st.session_state.get("user_email"):
+        return st.session_state.user_email
+
+    st.markdown("## 🎣 Fishing Log")
+    st.markdown("Enter your email to get started. Your data is private to you.")
+    with st.form("login_form"):
+        email = st.text_input("Email address")
+        if st.form_submit_button("Sign in", type="primary"):
+            if "@" in email and "." in email:
+                st.session_state.user_email = email.lower().strip()
+                st.rerun()
+            else:
+                st.error("Please enter a valid email address.")
+    st.stop()
+    return ""  # unreachable
+
+
 @st.cache_resource
 def _bootstrap():
-    """Initialize the DB and take a startup backup once per server process."""
-    db.init_db()
-    backup.auto_backup()
+    """Wire up DATABASE_URL from secrets and initialise the engine once."""
+    import os
+    if "database_url" in st.secrets:
+        os.environ["DATABASE_URL"] = st.secrets["database_url"]
     return True
 
 
@@ -1135,35 +1165,38 @@ def page_backup():
 
 def main():
     _bootstrap()
+    user_email = _get_user_email()   # shows login screen if not signed in
+    db.set_current_user(user_email)  # all DB calls in this run are scoped to this user
     _inject_css()
+
     st.sidebar.title("🎣 Fishing Log")
+    st.sidebar.caption(f"Signed in as **{user_email}**")
+    if st.sidebar.button("Sign out"):
+        st.session_state.pop("user_email", None)
+        st.rerun()
+
     page = st.sidebar.radio(
         "Navigate",
         ["Dashboard", "Log a Session", "Browse & Search", "Analytics", "Map",
-         "Backup & Export"],
+         "Export"],
     )
 
     _hero_banner()
 
     st.sidebar.divider()
-    if db.session_count() == 0:
+    n_sessions = db.session_count()
+    if n_sessions == 0:
         st.sidebar.info("No sessions yet — add one under **Log a Session**.")
     else:
-        st.sidebar.caption(f"{db.session_count()} sessions logged.")
-        with st.sidebar.expander("⚠️ Clear data"):
-            st.caption(
-                "Deletes ALL sessions, catches, and photos. Use this to wipe the "
-                "sample data before logging your own trips. This cannot be undone."
-            )
+        st.sidebar.caption(f"{n_sessions} sessions logged.")
+        with st.sidebar.expander("⚠️ Clear my data"):
+            st.caption("Deletes ALL your sessions and fish records. Cannot be undone.")
             confirm = st.checkbox("Yes, I'm sure")
-            if st.button("Delete all data", type="primary", disabled=not confirm):
-                n = db.delete_all_sessions()
-                media.delete_all_photos()
+            if st.button("Delete all my data", type="primary", disabled=not confirm):
+                db.delete_all_sessions()
                 _refresh()
-                st.success(f"Deleted {n} sessions.")
+                st.success("All your data deleted.")
                 st.rerun()
-
-    st.sidebar.caption(f"DB: {db.get_db_path()}")
 
     {
         "Dashboard": page_dashboard,
@@ -1171,7 +1204,7 @@ def main():
         "Browse & Search": page_browse,
         "Analytics": page_analytics,
         "Map": page_map,
-        "Backup & Export": page_backup,
+        "Export": page_backup,
     }[page]()
 
 

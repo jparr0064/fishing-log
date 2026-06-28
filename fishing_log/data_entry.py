@@ -182,21 +182,17 @@ def add_session(
     session: dict, fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None
 ) -> int:
     """Validate and persist a session, its fish, and its map spots. Returns new id."""
+    from sqlalchemy import text
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
     cleaned_spots = validate_spots(spots or [])
-    if cleaned_spots:  # primary coordinate = first spot
+    if cleaned_spots:
         cleaned["latitude"] = cleaned_spots[0]["lat"]
         cleaned["longitude"] = cleaned_spots[0]["lon"]
-    conn = db.get_connection()
-    try:
-        session_id = db.insert_session(conn, cleaned)
-        db.insert_fish(conn, session_id, cleaned_fish)
-        db.insert_spots(conn, session_id, cleaned_spots)
-        conn.commit()
-        return session_id
-    finally:
-        conn.close()
+    session_id = db.insert_session(cleaned)
+    db.insert_fish(session_id, cleaned_fish)
+    db.insert_spots(session_id, cleaned_spots)
+    return session_id
 
 
 def update_session(
@@ -204,52 +200,49 @@ def update_session(
     fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None,
 ) -> None:
     """Replace a session's fields and (entirely) its fish and spots lists."""
+    from sqlalchemy import text
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
     cleaned_spots = validate_spots(spots or [])
     if cleaned_spots:
         cleaned["latitude"] = cleaned_spots[0]["lat"]
         cleaned["longitude"] = cleaned_spots[0]["lon"]
-    conn = db.get_connection()
-    try:
-        assignments = ", ".join(f"{f} = :{f}" for f in db.SESSION_FIELDS)
-        params = {f: cleaned.get(f) for f in db.SESSION_FIELDS}
-        params["id"] = session_id
-        cur = conn.execute(f"UPDATE sessions SET {assignments} WHERE id = :id", params)
-        if cur.rowcount == 0:
+
+    assignments = ", ".join(f"{f} = :{f}" for f in db.SESSION_FIELDS)
+    params = {f: cleaned.get(f) for f in db.SESSION_FIELDS}
+    params["id"] = session_id
+    params["user_email"] = db.get_current_user()
+
+    with db.get_engine().begin() as conn:
+        result = conn.execute(
+            text(f"UPDATE sessions SET {assignments} WHERE id = :id AND user_email = :user_email"),
+            params,
+        )
+        if result.rowcount == 0:
             raise ValidationError(f"No session with id {session_id}.")
-        conn.execute("DELETE FROM fish WHERE session_id = ?", (session_id,))
-        db.insert_fish(conn, session_id, cleaned_fish)
-        # Only replace spots when a new set is provided, so callers that don't
-        # touch spots (e.g. quick field edits) don't wipe them.
+        conn.execute(text("DELETE FROM fish WHERE session_id = :sid"), {"sid": session_id})
         if spots is not None:
-            conn.execute("DELETE FROM spots WHERE session_id = ?", (session_id,))
-            db.insert_spots(conn, session_id, cleaned_spots)
-        conn.commit()
-    finally:
-        conn.close()
+            conn.execute(text("DELETE FROM spots WHERE session_id = :sid"), {"sid": session_id})
+
+    db.insert_fish(session_id, cleaned_fish)
+    if spots is not None:
+        db.insert_spots(session_id, cleaned_spots)
 
 
 def set_dwr_filed(session_id: int, filed: bool) -> None:
     """Mark whether a session's striper report has been filed to DWR."""
-    conn = db.get_connection()
-    try:
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
         conn.execute(
-            "UPDATE sessions SET dwr_filed = ? WHERE id = ?",
-            (int(bool(filed)), session_id),
+            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id AND user_email = :email"),
+            {"filed": int(bool(filed)), "id": session_id, "email": db.get_current_user()},
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def delete_session(session_id: int) -> None:
-    conn = db.get_connection()
-    try:
-        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    # Remove any photo files for this session (DB rows cascade-deleted above).
-    from . import media
-    media.delete_session_photos(session_id)
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
+        conn.execute(
+            text("DELETE FROM sessions WHERE id = :id AND user_email = :email"),
+            {"id": session_id, "email": db.get_current_user()},
+        )

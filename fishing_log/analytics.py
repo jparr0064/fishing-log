@@ -28,7 +28,8 @@ SEASON_ORDER = ["Spring", "Summer", "Fall", "Winter"]
 
 def _session_frame() -> pd.DataFrame:
     """One row per session with total_fish, caught flag, month/season, etc."""
-    query = """
+    from sqlalchemy import text
+    query = text("""
         SELECT
             s.id, s.date, s.location_name, s.weather, s.hours_fished,
             s.water_temp, s.fishing_style, s.bait_lure, s.start_time,
@@ -36,13 +37,11 @@ def _session_frame() -> pd.DataFrame:
             COUNT(f.id) AS total_fish
         FROM sessions s
         LEFT JOIN fish f ON f.session_id = s.id
+        WHERE s.user_email = :email
         GROUP BY s.id
-    """
-    conn = db.get_connection()
-    try:
-        df = pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
+    """)
+    with db.get_engine().connect() as conn:
+        df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
 
     if df.empty:
         return df
@@ -253,23 +252,22 @@ def best_conditions(min_sessions: int = 2) -> list:
 
 def by_species() -> pd.DataFrame:
     """Per-species totals plus size metrics (averages ignore unrecorded 0 sizes)."""
-    query = """
+    from sqlalchemy import text
+    query = text("""
         SELECT
-            species,
+            f.species,
             COUNT(*) AS total_caught,
-            COUNT(DISTINCT session_id) AS sessions_present,
-            ROUND(AVG(NULLIF(length, 0)), 2) AS avg_length,
-            MAX(length) AS max_length,
-            ROUND(AVG(NULLIF(weight, 0)), 2) AS avg_weight,
-            MAX(weight) AS max_weight
-        FROM fish
-        GROUP BY species
-    """
-    conn = db.get_connection()
-    try:
-        df = pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
+            COUNT(DISTINCT f.session_id) AS sessions_present,
+            ROUND(AVG(NULLIF(f.length, 0))::numeric, 2) AS avg_length,
+            MAX(f.length) AS max_length,
+            ROUND(AVG(NULLIF(f.weight, 0))::numeric, 2) AS avg_weight,
+            MAX(f.weight) AS max_weight
+        FROM fish f JOIN sessions s ON s.id = f.session_id
+        WHERE s.user_email = :email
+        GROUP BY f.species
+    """)
+    with db.get_engine().connect() as conn:
+        df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
 
     if df.empty:
         return df
@@ -280,15 +278,14 @@ def by_species() -> pd.DataFrame:
 
 def _fish_with_dates() -> pd.DataFrame:
     """Every fish joined to its session date (for size analytics)."""
-    query = """
+    from sqlalchemy import text
+    query = text("""
         SELECT f.species, f.length, f.weight, s.date
         FROM fish f JOIN sessions s ON s.id = f.session_id
-    """
-    conn = db.get_connection()
-    try:
-        df = pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
+        WHERE s.user_email = :email
+    """)
+    with db.get_engine().connect() as conn:
+        df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
     return df

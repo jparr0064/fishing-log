@@ -1,11 +1,20 @@
-"""Browse and search past sessions, returning pandas DataFrames for the UI."""
+"""Browse and search past sessions, returning pandas DataFrames for the UI.
+
+All queries are scoped to db.get_current_user() so each angler sees only
+their own data.
+"""
 from __future__ import annotations
 
 from typing import Optional
 
 import pandas as pd
+from sqlalchemy import text
 
 from . import database as db
+
+
+def _user() -> str:
+    return db.get_current_user()
 
 
 def list_sessions(
@@ -14,34 +23,25 @@ def list_sessions(
     location: Optional[str] = None,
     species: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Return a row per session matching the (optional) filters.
-
-    Each row includes ``total_fish`` (sum of catch counts) and a
-    comma-joined ``species_list``. ``species`` filters to sessions that
-    recorded at least one catch of that species.
-    """
-    where = []
-    params: list = []
+    where = ["s.user_email = :user_email"]
+    params: dict = {"user_email": _user()}
 
     if date_from:
-        where.append("s.date >= ?")
-        params.append(str(date_from))
+        where.append("s.date >= :date_from")
+        params["date_from"] = str(date_from)
     if date_to:
-        where.append("s.date <= ?")
-        params.append(str(date_to))
+        where.append("s.date <= :date_to")
+        params["date_to"] = str(date_to)
     if location:
-        where.append("s.location_name LIKE ?")
-        params.append(f"%{location}%")
+        where.append("s.location_name ILIKE :location")
+        params["location"] = f"%{location}%"
     if species:
-        where.append(
-            "s.id IN (SELECT session_id FROM fish WHERE species LIKE ?)"
-        )
-        params.append(f"%{species}%")
+        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        params["species"] = f"%{species}%"
 
-    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    where_sql = "WHERE " + " AND ".join(where)
 
-    # total_fish is the row count; species_list aggregates per-species counts.
-    query = f"""
+    query = text(f"""
         SELECT
             s.id, s.date, s.start_time, s.end_time, s.hours_fished,
             s.location_name, s.latitude, s.longitude, s.weather,
@@ -50,50 +50,54 @@ def list_sessions(
             (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish,
             (SELECT MAX(length) FROM fish WHERE session_id = s.id) AS biggest_length,
             COALESCE((
-                SELECT GROUP_CONCAT(sp || ' (' || c || ')', ', ')
+                SELECT STRING_AGG(sp || ' (' || c::text || ')', ', ' ORDER BY sp)
                 FROM (
                     SELECT species AS sp, COUNT(*) AS c
                     FROM fish WHERE session_id = s.id
-                    GROUP BY species ORDER BY species
-                )
+                    GROUP BY species
+                ) sub
             ), '') AS species_list
         FROM sessions s
         {where_sql}
         ORDER BY s.date DESC, s.start_time DESC
-    """
-    conn = db.get_connection()
-    try:
+    """)
+
+    with db.get_engine().connect() as conn:
         return pd.read_sql_query(query, conn, params=params)
-    finally:
-        conn.close()
 
 
 def get_session(session_id: int) -> Optional[dict]:
-    """Full detail for one session including its individual fish rows."""
-    conn = db.get_connection()
-    try:
-        srow = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-        if srow is None:
+    """Full detail for one session (scoped to current user)."""
+    engine = db.get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT * FROM sessions WHERE id = :id AND user_email = :email"),
+            {"id": session_id, "email": _user()},
+        ).mappings().first()
+        if row is None:
             return None
+
         fish = conn.execute(
-            "SELECT species, length, weight, kept, depth FROM fish WHERE session_id = ? "
-            "ORDER BY species, id",
-            (session_id,),
-        ).fetchall()
+            text(
+                "SELECT species, length, weight, kept, depth FROM fish "
+                "WHERE session_id = :sid ORDER BY species, id"
+            ),
+            {"sid": session_id},
+        ).mappings().all()
+
         spots = conn.execute(
-            "SELECT latitude, longitude, label, caught FROM spots "
-            "WHERE session_id = ? ORDER BY id",
-            (session_id,),
-        ).fetchall()
-        session = dict(srow)
-        session["fish"] = [
-            {**dict(f), "kept": bool(f["kept"])} for f in fish
-        ]
-        session["spots"] = [dict(s) for s in spots]
-        session["total_fish"] = len(session["fish"])
-        return session
-    finally:
-        conn.close()
+            text(
+                "SELECT latitude, longitude, label, caught FROM spots "
+                "WHERE session_id = :sid ORDER BY id"
+            ),
+            {"sid": session_id},
+        ).mappings().all()
+
+    session = dict(row)
+    session["fish"] = [{**dict(f), "kept": bool(f["kept"])} for f in fish]
+    session["spots"] = [dict(s) for s in spots]
+    session["total_fish"] = len(session["fish"])
+    return session
 
 
 def map_rows(
@@ -102,44 +106,43 @@ def map_rows(
     location: Optional[str] = None,
     species: Optional[str] = None,
 ) -> pd.DataFrame:
-    """One row per SESSION (its starting coordinate) for the overview map."""
-    where = ["s.latitude IS NOT NULL", "s.longitude IS NOT NULL"]
-    params: list = []
-    if date_from:
-        where.append("s.date >= ?")
-        params.append(str(date_from))
-    if date_to:
-        where.append("s.date <= ?")
-        params.append(str(date_to))
-    if location:
-        where.append("s.location_name LIKE ?")
-        params.append(f"%{location}%")
-    if species:
-        where.append("s.id IN (SELECT session_id FROM fish WHERE species LIKE ?)")
-        params.append(f"%{species}%")
+    """One row per session (starting coordinate) for the overview map."""
+    where = ["s.user_email = :user_email", "s.latitude IS NOT NULL", "s.longitude IS NOT NULL"]
+    params: dict = {"user_email": _user()}
 
-    query = f"""
+    if date_from:
+        where.append("s.date >= :date_from")
+        params["date_from"] = str(date_from)
+    if date_to:
+        where.append("s.date <= :date_to")
+        params["date_to"] = str(date_to)
+    if location:
+        where.append("s.location_name ILIKE :location")
+        params["location"] = f"%{location}%"
+    if species:
+        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        params["species"] = f"%{species}%"
+
+    query = text(f"""
         SELECT
             s.latitude, s.longitude, s.id, s.date, s.start_time, s.end_time,
             s.location_name, s.weather, s.air_temp, s.water_temp,
             s.bait_lure, s.fishing_style,
             (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish,
             COALESCE((
-                SELECT GROUP_CONCAT(species_name || ' (' || c || ')', ', ')
+                SELECT STRING_AGG(sp || ' (' || c::text || ')', ', ' ORDER BY sp)
                 FROM (
-                    SELECT species AS species_name, COUNT(*) AS c
-                    FROM fish WHERE session_id = s.id GROUP BY species ORDER BY species
-                )
+                    SELECT species AS sp, COUNT(*) AS c
+                    FROM fish WHERE session_id = s.id GROUP BY species
+                ) sub
             ), '') AS species_list
         FROM sessions s
         WHERE {' AND '.join(where)}
         ORDER BY s.date DESC
-    """
-    conn = db.get_connection()
-    try:
+    """)
+
+    with db.get_engine().connect() as conn:
         return pd.read_sql_query(query, conn, params=params)
-    finally:
-        conn.close()
 
 
 def caught_spot_points(
@@ -149,101 +152,96 @@ def caught_spot_points(
     species: Optional[str] = None,
 ) -> list:
     """[lat, lon] for every spot where a fish was caught (for the heatmap)."""
-    where = ["sp.caught = 1"]
-    params: list = []
+    where = ["sp.caught = 1", "s.user_email = :user_email"]
+    params: dict = {"user_email": _user()}
+
     if date_from:
-        where.append("s.date >= ?")
-        params.append(str(date_from))
+        where.append("s.date >= :date_from")
+        params["date_from"] = str(date_from)
     if date_to:
-        where.append("s.date <= ?")
-        params.append(str(date_to))
+        where.append("s.date <= :date_to")
+        params["date_to"] = str(date_to)
     if location:
-        where.append("s.location_name LIKE ?")
-        params.append(f"%{location}%")
+        where.append("s.location_name ILIKE :location")
+        params["location"] = f"%{location}%"
     if species:
-        where.append("s.id IN (SELECT session_id FROM fish WHERE species LIKE ?)")
-        params.append(f"%{species}%")
-    query = f"""
+        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        params["species"] = f"%{species}%"
+
+    query = text(f"""
         SELECT sp.latitude, sp.longitude
         FROM spots sp JOIN sessions s ON s.id = sp.session_id
         WHERE {' AND '.join(where)}
-    """
-    conn = db.get_connection()
-    try:
-        rows = conn.execute(query, params).fetchall()
-        return [[r["latitude"], r["longitude"]] for r in rows]
-    finally:
-        conn.close()
+    """)
+
+    with db.get_engine().connect() as conn:
+        rows = conn.execute(query, params).mappings().all()
+    return [[r["latitude"], r["longitude"]] for r in rows]
 
 
 def fish_export() -> pd.DataFrame:
-    """Flat one-row-per-fish table (with session context) for CSV export."""
-    query = """
+    """Flat one-row-per-fish table for CSV export."""
+    query = text("""
         SELECT s.id AS session_id, s.date, s.location_name, s.weather,
                s.air_temp, s.water_temp, s.bait_lure, s.fishing_style,
-               f.species, f.length, f.weight
+               f.species, f.length, f.weight, f.depth
         FROM fish f JOIN sessions s ON s.id = f.session_id
+        WHERE s.user_email = :email
         ORDER BY s.date, f.id
-    """
-    conn = db.get_connection()
-    try:
-        return pd.read_sql_query(query, conn)
-    finally:
-        conn.close()
+    """)
+    with db.get_engine().connect() as conn:
+        return pd.read_sql_query(query, conn, params={"email": _user()})
 
 
 def distinct_locations() -> list:
-    conn = db.get_connection()
-    try:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT location_name FROM sessions ORDER BY location_name"
-        ).fetchall()
-        return [r["location_name"] for r in rows]
-    finally:
-        conn.close()
+            text("SELECT DISTINCT location_name FROM sessions "
+                 "WHERE user_email = :email ORDER BY location_name"),
+            {"email": _user()},
+        ).mappings().all()
+    return [r["location_name"] for r in rows]
 
 
 def distinct_species() -> list:
-    conn = db.get_connection()
-    try:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT species FROM fish ORDER BY species"
-        ).fetchall()
-        return [r["species"] for r in rows]
-    finally:
-        conn.close()
+            text("SELECT DISTINCT f.species FROM fish f "
+                 "JOIN sessions s ON s.id = f.session_id "
+                 "WHERE s.user_email = :email ORDER BY f.species"),
+            {"email": _user()},
+        ).mappings().all()
+    return [r["species"] for r in rows]
 
 
 def baits_by_frequency() -> list:
-    """Distinct bait/lures, most-used first (for the entry pick-list)."""
-    conn = db.get_connection()
-    try:
+    """Distinct bait/lures, most-used first."""
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
-            """
-            SELECT bait_lure, COUNT(*) AS n
-            FROM sessions
-            WHERE bait_lure IS NOT NULL AND TRIM(bait_lure) <> ''
-            GROUP BY bait_lure
-            ORDER BY n DESC, bait_lure
-            """
-        ).fetchall()
-        return [r["bait_lure"] for r in rows]
-    finally:
-        conn.close()
+            text("""
+                SELECT bait_lure, COUNT(*) AS n
+                FROM sessions
+                WHERE user_email = :email
+                  AND bait_lure IS NOT NULL AND TRIM(bait_lure) <> ''
+                GROUP BY bait_lure
+                ORDER BY n DESC, bait_lure
+            """),
+            {"email": _user()},
+        ).mappings().all()
+    return [r["bait_lure"] for r in rows]
 
 
 def recent_defaults() -> dict:
     """Weather / temps / bait from the most recent session, to pre-fill the form."""
-    conn = db.get_connection()
-    try:
+    with db.get_engine().connect() as conn:
         row = conn.execute(
-            """
-            SELECT weather, air_temp, water_temp, bait_lure, fishing_style
-            FROM sessions
-            ORDER BY date DESC, id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        return dict(row) if row else {}
-    finally:
-        conn.close()
+            text("""
+                SELECT weather, air_temp, water_temp, bait_lure, fishing_style
+                FROM sessions
+                WHERE user_email = :email
+                ORDER BY date DESC, id DESC
+                LIMIT 1
+            """),
+            {"email": _user()},
+        ).mappings().first()
+    return dict(row) if row else {}
