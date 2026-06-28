@@ -360,7 +360,7 @@ def _spots_picker(state_key: str, map_key: str):
         map_view.draw_route(fmap, spots)
         fmap.add_child(folium.LatLngPopup())
         result = st_folium(
-            fmap, height=300, use_container_width=True,
+            fmap, height=520, use_container_width=True,
             returned_objects=["last_clicked", "center", "zoom"], key=map_key,
         )
         if result:
@@ -372,7 +372,10 @@ def _spots_picker(state_key: str, map_key: str):
             elif isinstance(ctr, (list, tuple)) and len(ctr) == 2:
                 st.session_state[center_key] = (ctr[0], ctr[1])
             if result.get("last_clicked"):
-                _append_spot(spots, result["last_clicked"]["lat"], result["last_clicked"]["lng"])
+                lc = result["last_clicked"]
+                # Use clicked point as new center so map doesn't jump back after rerun
+                st.session_state[center_key] = (lc["lat"], lc["lng"])
+                _append_spot(spots, lc["lat"], lc["lng"])
 
     # Per-spot "fish caught here" toggles (no value= so the widget reads its own
     # pre-seeded session_state; the top-of-function sync keeps the map in step).
@@ -1104,8 +1107,12 @@ def page_analytics():
 def page_map():
     st.header("🗺️ Map")
     st.caption("Each spot is a dropped pin, color-coded by that trip's catch success: "
-               "Skunked (0), Good (1–3), Great (4–6), Blowout (7+). "
-               "(Basemap tiles require internet; your data is stored locally.)")
+               "Skunked (0), Good (1–3), Great (4–6), Blowout (7+).")
+
+    col_a, col_b = st.columns([3, 1])
+    with col_b:
+        fullscreen = st.checkbox("⛶ Full-screen map", value=False)
+
     filters = _filter_controls("map")
     df = _cached_map_rows(*filters)
     if df.empty:
@@ -1123,7 +1130,15 @@ def page_map():
             map_view.add_heatmap(fmap, pts)
         else:
             st.caption("No catch spots recorded yet — mark spots with 🐟 when logging trips.")
-    st_folium(fmap, use_container_width=True, height=600, returned_objects=[])
+
+    map_height = 860 if fullscreen else 620
+    if fullscreen:
+        st.markdown(
+            "<style>.block-container{max-width:100%!important;padding-left:1rem!important;"
+            "padding-right:1rem!important}</style>",
+            unsafe_allow_html=True,
+        )
+    st_folium(fmap, use_container_width=True, height=map_height, returned_objects=[])
 
     if st.button("💾 Export standalone map.html"):
         out = map_view.save_map(df, db.PROJECT_ROOT / "map.html")
