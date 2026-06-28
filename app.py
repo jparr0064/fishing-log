@@ -375,6 +375,7 @@ def _spots_picker(state_key: str, map_key: str):
         # trigger a map.setView() call after every render, which animates the map
         # and can cause Leaflet to miss the next click event.
         fmap = folium.Map(location=view_center, zoom_start=view_zoom)
+        fmap._id = map_key  # stable HTML id across reruns → Leaflet doesn't reinitialize on zoom
         map_view.draw_route(fmap, spots)
         result = st_folium(
             fmap,
@@ -604,14 +605,23 @@ def _dwr_nudge(sid: int):
                 dwr_report.prefilled_url(detail),
                 type="primary",
             )
-            if btn_col.button("✅ Step 2 — Mark as filed", key=f"dwr_file_{sid}"):
-                n = data_entry.set_dwr_filed(sid, True)
-                if n > 0:
+            fk = f"dwr_nf_{sid}"
+            if fk not in st.session_state:
+                st.session_state[fk] = False
+
+            def _toggle(_sid=sid, _key=fk):
+                new_val = st.session_state[_key]
+                n = data_entry.set_dwr_filed(_sid, new_val)
+                if n == 0:
+                    st.session_state.pop(_key, None)
+                    st.toast("⚠️ Could not save — try again.", icon="⚠️")
+                elif new_val:
                     st.session_state.pop("pending_dwr_sid", None)
                     _refresh()
-                    st.rerun()
                 else:
-                    st.error("Could not mark as filed — try the checkbox in Browse & Search.")
+                    _refresh()
+
+            btn_col.checkbox("Step 2 — Mark as filed to DWR", key=fk, on_change=_toggle)
 
 
 def page_log_session():
