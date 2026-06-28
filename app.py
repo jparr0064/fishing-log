@@ -564,8 +564,47 @@ def _fish_from_editor(edited: pd.DataFrame) -> list:
     return out
 
 
+def _dwr_nudge(sid: int):
+    """DWR filing card shown at the top of Log a Session after saving."""
+    detail = search.get_session(sid)
+    if not detail:
+        return
+    report = dwr_report.summarize(detail)
+    with st.container(border=True):
+        hcol, xcol = st.columns([11, 1])
+        hcol.markdown(
+            f"**📋 DWR Striper Report — {detail['date']} · {detail['location_name']}**  \n"
+            f"Harvested: **{report['harvested_n']}** · "
+            f"Released: **{report['released_n']}** · "
+            f"Anglers: **{report['anglers']}** · "
+            f"Hours: **{report['hours'] or '—'}**"
+        )
+        if xcol.button("✕", key=f"dwr_nx_{sid}", help="Dismiss"):
+            st.session_state.pop("pending_dwr_sid", None)
+            st.rerun()
+        btn_col, chk_col = st.columns([3, 2])
+        btn_col.link_button(
+            "🎣 Open pre-filled DWR form",
+            dwr_report.prefilled_url(detail),
+            type="primary",
+        )
+        fk = f"dwr_nf_{sid}"
+        if fk not in st.session_state:
+            st.session_state[fk] = bool(detail.get("dwr_filed"))
+
+        def _toggle(_sid=sid, _key=fk):
+            data_entry.set_dwr_filed(_sid, st.session_state[_key])
+            _refresh()
+
+        chk_col.checkbox("✅ Mark as filed to DWR", key=fk, on_change=_toggle)
+
+
 def page_log_session():
     st.header("➕ Log a Session")
+
+    # DWR nudge for the session just saved — stays until dismissed or replaced.
+    if "pending_dwr_sid" in st.session_state:
+        _dwr_nudge(st.session_state["pending_dwr_sid"])
 
     # Spot picker and photo editor live OUTSIDE the form so their controls
     # can rerun interactively (map clicks, rotate/crop).
@@ -674,6 +713,7 @@ def page_log_session():
             _clear_spot_state("spots", "loc_picker")
             st.session_state.pending_photos = []
             st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
+            st.session_state["pending_dwr_sid"] = new_id
             photo_note = f" ({len(saved_photos)} photo(s))" if saved_photos else ""
             st.success(
                 f"Saved session #{new_id} — {total} fish, {len(spots)} spot(s) "
