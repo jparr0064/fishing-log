@@ -365,12 +365,14 @@ def _spots_picker(state_key: str, map_key: str):
             st.rerun()
 
     with map_col:
+        # Build the map at the saved center/zoom so reinit lands in the right
+        # spot. Do NOT pass center= or zoom= as explicit st_folium props — those
+        # trigger a map.setView() call after every render, which animates the map
+        # and can cause Leaflet to miss the next click event.
         fmap = folium.Map(location=view_center, zoom_start=view_zoom)
         map_view.draw_route(fmap, spots)
         result = st_folium(
             fmap,
-            center=list(view_center),
-            zoom=view_zoom,
             height=map_height,
             use_container_width=True,
             returned_objects=["last_clicked", "center", "zoom"],
@@ -388,6 +390,7 @@ def _spots_picker(state_key: str, map_key: str):
                 lc = result["last_clicked"]
                 st.session_state[center_key] = (lc["lat"], lc["lng"])
                 if _append_spot(spots, lc["lat"], lc["lng"]):
+                    st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
                     st.rerun()
 
     # Per-spot "fish caught here" toggles.
