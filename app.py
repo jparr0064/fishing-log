@@ -301,7 +301,6 @@ def _append_spot(spots: list, lat, lon) -> None:
     lat, lon = round(float(lat), 6), round(float(lon), 6)
     if not spots or (spots[-1]["lat"], spots[-1]["lon"]) != (lat, lon):
         spots.append({"lat": lat, "lon": lon})
-        st.rerun()
 
 
 def _clear_spot_state(state_key: str, map_key: str):
@@ -334,10 +333,13 @@ def _spots_picker(state_key: str, map_key: str):
     view_center = st.session_state.get(center_key, default_center)
     view_zoom = st.session_state.get(zoom_key, map_view.DEFAULT_ZOOM)
 
-    st.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
-                "click again to add each spot along your troll. The arrowed line shows "
-                "your direction; mark which spots produced a fish below.")
-    map_col, side_col = st.columns([4, 1])
+    hdr_col, fs_col = st.columns([5, 1])
+    hdr_col.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
+                     "click again to add each spot along your troll.")
+    fullscreen = fs_col.checkbox("⛶ Full screen", key=f"{map_key}_fs", value=False)
+    map_height = 720 if fullscreen else 480
+
+    map_col, side_col = st.columns([5, 1]) if fullscreen else st.columns([4, 1])
 
     with side_col:
         st.caption(f"{len(spots)} spot(s)")
@@ -345,11 +347,11 @@ def _spots_picker(state_key: str, map_key: str):
             loc = streamlit_geolocation()
             if loc and loc.get("latitude") is not None:
                 _append_spot(spots, loc["latitude"], loc["longitude"])
-        if spots and st.button("↩ Remove last", key=f"{map_key}_rmlast"):
+        if spots and st.button("↩ Last", key=f"{map_key}_rmlast"):
             st.session_state.pop(f"{map_key}_c{len(spots) - 1}", None)
             spots.pop()
             st.rerun()
-        if spots and st.button("🗑 Clear all", key=f"{map_key}_clear"):
+        if spots and st.button("🗑 Clear", key=f"{map_key}_clear"):
             for i in range(len(spots)):
                 st.session_state.pop(f"{map_key}_c{i}", None)
             spots.clear()
@@ -360,8 +362,13 @@ def _spots_picker(state_key: str, map_key: str):
         map_view.draw_route(fmap, spots)
         fmap.add_child(folium.LatLngPopup())
         result = st_folium(
-            fmap, height=520, use_container_width=True,
-            returned_objects=["last_clicked", "center", "zoom"], key=map_key,
+            fmap,
+            center=list(view_center),
+            zoom=view_zoom,
+            height=map_height,
+            use_container_width=True,
+            returned_objects=["last_clicked", "center", "zoom"],
+            key=map_key,
         )
         if result:
             if result.get("zoom") is not None:
@@ -373,7 +380,6 @@ def _spots_picker(state_key: str, map_key: str):
                 st.session_state[center_key] = (ctr[0], ctr[1])
             if result.get("last_clicked"):
                 lc = result["last_clicked"]
-                # Use clicked point as new center so map doesn't jump back after rerun
                 st.session_state[center_key] = (lc["lat"], lc["lng"])
                 _append_spot(spots, lc["lat"], lc["lng"])
 
