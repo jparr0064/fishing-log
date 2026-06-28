@@ -296,11 +296,13 @@ def page_dashboard():
                 )
 
 
-def _append_spot(spots: list, lat, lon) -> None:
-    """Add a spot if it differs from the last one (avoids rerun loops)."""
+def _append_spot(spots: list, lat, lon) -> bool:
+    """Add a spot if it differs from the last one. Returns True if added."""
     lat, lon = round(float(lat), 6), round(float(lon), 6)
     if not spots or (spots[-1]["lat"], spots[-1]["lon"]) != (lat, lon):
         spots.append({"lat": lat, "lon": lon})
+        return True
+    return False
 
 
 def _clear_spot_state(state_key: str, map_key: str):
@@ -350,7 +352,8 @@ def _spots_picker(state_key: str, map_key: str):
         if streamlit_geolocation is not None:
             loc = streamlit_geolocation()
             if loc and loc.get("latitude") is not None:
-                _append_spot(spots, loc["latitude"], loc["longitude"])
+                if _append_spot(spots, loc["latitude"], loc["longitude"]):
+                    st.rerun()
         if spots and st.button("↩ Last", key=f"{map_key}_rmlast"):
             st.session_state.pop(f"{map_key}_c{len(spots) - 1}", None)
             spots.pop()
@@ -385,7 +388,8 @@ def _spots_picker(state_key: str, map_key: str):
             if result.get("last_clicked"):
                 lc = result["last_clicked"]
                 st.session_state[center_key] = (lc["lat"], lc["lng"])
-                _append_spot(spots, lc["lat"], lc["lng"])
+                if _append_spot(spots, lc["lat"], lc["lng"]):
+                    st.rerun()
 
     # Per-spot "fish caught here" toggles.
     if spots:
