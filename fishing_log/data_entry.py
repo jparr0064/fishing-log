@@ -42,12 +42,15 @@ FISHING_STYLES = ["Planer Boards", "Casting", "Drop Line with Bait", "Spoon Rip 
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
+    v = value.strip()
+    if len(v) == 4 and v.isdigit():
+        v = v[:2] + ":" + v[2:]
     for fmt in ("%H:%M", "%H:%M:%S"):
         try:
-            return datetime.strptime(value.strip(), fmt)
+            return datetime.strptime(v, fmt)
         except ValueError:
             continue
-    raise ValidationError(f"Invalid time '{value}' (expected HH:MM).")
+    raise ValidationError(f"Invalid time '{value}' (expected HH:MM or HHMM).")
 
 
 def compute_hours(start_time: Optional[str], end_time: Optional[str]) -> Optional[float]:

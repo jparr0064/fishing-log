@@ -643,8 +643,10 @@ def page_log_session():
         col1, col2, col3 = st.columns(3)
         with col1:
             d = st.date_input("Date", value=date.today())
-            start_time = st.text_input("Start time (HH:MM)", value="06:00")
-            end_time = st.text_input("End time (HH:MM)", value="11:00")
+            start_time = st.text_input("Start time", value="06:00",
+                                       placeholder="0600 or 06:00")
+            end_time = st.text_input("End time", value="11:00",
+                                     placeholder="1100 or 11:00")
         with col2:
             location_name = st.text_input("Location name", value=DEFAULT_LOCATION)
             num_anglers = st.number_input(
@@ -659,10 +661,12 @@ def page_log_session():
         with col3:
             weather = st.selectbox("Weather", data_entry.WEATHER_OPTIONS, index=weather_idx)
             air_temp = st.number_input(
-                "Air temp (°)", value=float(defaults.get("air_temp") or 70.0)
+                "Air temp (°)", value=int(float(defaults.get("air_temp") or 70)),
+                step=1, format="%d",
             )
             water_temp = st.number_input(
-                "Water temp (°)", value=float(defaults.get("water_temp") or 60.0)
+                "Water temp (°)", value=int(float(defaults.get("water_temp") or 60)),
+                step=1, format="%d",
             )
 
         # Bait + style: reuse a previous bait (defaults to last used) and/or type a new one.
@@ -963,10 +967,12 @@ def _edit_form(detail: dict):
                 key=f"e_date_{sid}",
             )
             start_time = st.text_input(
-                "Start time (HH:MM)", value=detail.get("start_time") or "", key=f"e_start_{sid}"
+                "Start time", value=detail.get("start_time") or "",
+                placeholder="0600 or 06:00", key=f"e_start_{sid}"
             )
             end_time = st.text_input(
-                "End time (HH:MM)", value=detail.get("end_time") or "", key=f"e_end_{sid}"
+                "End time", value=detail.get("end_time") or "",
+                placeholder="1100 or 11:00", key=f"e_end_{sid}"
             )
         with c2:
             location_name = st.text_input(
@@ -987,13 +993,13 @@ def _edit_form(detail: dict):
             )
             air_temp = st.number_input(
                 "Air temp (°)",
-                value=float(detail["air_temp"]) if detail.get("air_temp") is not None else 70.0,
-                key=f"e_air_{sid}",
+                value=int(float(detail["air_temp"])) if detail.get("air_temp") is not None else 70,
+                step=1, format="%d", key=f"e_air_{sid}",
             )
             water_temp = st.number_input(
                 "Water temp (°)",
-                value=float(detail["water_temp"]) if detail.get("water_temp") is not None else 60.0,
-                key=f"e_water_{sid}",
+                value=int(float(detail["water_temp"])) if detail.get("water_temp") is not None else 60,
+                step=1, format="%d", key=f"e_water_{sid}",
             )
 
         bcol1, bcol2 = st.columns(2)
