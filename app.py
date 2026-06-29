@@ -495,8 +495,7 @@ def _session_photo_manager(session_id: int):
         cols = st.columns(min(4, len(photos)))
         for i, ph in enumerate(photos):
             with cols[i % len(cols)]:
-                if os.path.exists(ph["abs_path"]):
-                    st.image(ph["abs_path"], width=160)
+                st.image(ph["data"], width=160)
                 if st.button("Remove", key=f"{kp}_rm_{ph['id']}"):
                     media.delete_photo(ph["id"])
                     _refresh()
@@ -792,7 +791,7 @@ def _filter_controls(key_prefix: str):
 def _trip_card(r):
     """A compact, clickable trip summary card for the Browse grid."""
     photos = media.get_photos(int(r.id))
-    thumb = next((p["abs_path"] for p in photos if os.path.exists(p["abs_path"])), None)
+    thumb = next((p["data"] for p in photos), None)
     selected = st.session_state.get("browse_sel") == int(r.id)
     with st.container(border=True):
         cthumb, cinfo = st.columns([1, 2])
@@ -852,9 +851,8 @@ def page_browse():
         gallery = []
         for r in df.itertuples():
             for ph in media.get_photos(int(r.id)):
-                if os.path.exists(ph["abs_path"]):
-                    cap = ph.get("caption") or f"{r.date} · {int(r.total_fish)} fish"
-                    gallery.append((ph["abs_path"], cap))
+                cap = ph.get("caption") or f"{r.date} · {int(r.total_fish)} fish"
+                gallery.append((ph["data"], cap))
         if not gallery:
             st.caption("No photos yet — add some when logging a trip.")
         else:
@@ -943,11 +941,11 @@ def _render_session_detail(detail: dict, sid: int):
         st_folium(map_view.build_route_map(route_pts), height=320,
                   use_container_width=True, returned_objects=[], key=f"route_{sid}")
 
-    session_photos = [ph for ph in media.get_photos(sid) if os.path.exists(ph["abs_path"])]
+    session_photos = media.get_photos(sid)
     if session_photos:
         st.markdown("**Photos** — hover a photo and click the ⛶ icon (top-right) to view full size.")
         caps = [ph.get("caption") or "" for ph in session_photos]
-        st.image([ph["abs_path"] for ph in session_photos],
+        st.image([ph["data"] for ph in session_photos],
                  caption=caps if any(caps) else None, width=240)
 
     with st.expander("✏️ Edit this session"):
