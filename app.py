@@ -615,6 +615,30 @@ def _dwr_nudge(sid: int):
             btn_col.checkbox("Step 2 — Mark as filed to DWR", key=fk, on_change=_toggle)
 
 
+def _time_picker(label: str, default_hhmm: str = "06:00", key: str = "") -> str:
+    """Renders hour / minute / AM-PM selectors and returns an HH:MM string."""
+    try:
+        h, m = [int(x) for x in (default_hhmm or "06:00").split(":")]
+    except Exception:
+        h, m = 6, 0
+    ampm_def = "PM" if h >= 12 else "AM"
+    h12_def = h % 12 or 12
+    m_idx = [0, 15, 30, 45].index(m) if m in (0, 15, 30, 45) else 0
+
+    st.caption(label)
+    c1, c2, c3 = st.columns([2, 2, 2])
+    hr = c1.selectbox("Hr", list(range(1, 13)), index=h12_def - 1,
+                      key=f"{key}_h", label_visibility="collapsed")
+    mn = c2.selectbox("Min", [0, 15, 30, 45], index=m_idx,
+                      format_func=lambda x: f":{x:02d}",
+                      key=f"{key}_m", label_visibility="collapsed")
+    ap = c3.selectbox("AM/PM", ["AM", "PM"],
+                      index=0 if ampm_def == "AM" else 1,
+                      key=f"{key}_ap", label_visibility="collapsed")
+    h24 = hr % 12 + (12 if ap == "PM" else 0)
+    return f"{h24:02d}:{mn:02d}"
+
+
 def page_log_session():
     st.header("➕ Log a Session")
 
@@ -643,8 +667,8 @@ def page_log_session():
         col1, col2, col3 = st.columns(3)
         with col1:
             d = st.date_input("Date", value=date.today())
-            start_time = st.text_input("Start time (HH:MM)", value="06:00")
-            end_time = st.text_input("End time (HH:MM)", value="11:00")
+            start_time = _time_picker("Start time", "06:00", "log_start")
+            end_time = _time_picker("End time", "11:00", "log_end")
         with col2:
             location_name = st.text_input("Location name", value=DEFAULT_LOCATION)
             num_anglers = st.number_input(
@@ -964,11 +988,11 @@ def _edit_form(detail: dict):
                 "Date", value=datetime.strptime(detail["date"], "%Y-%m-%d").date(),
                 key=f"e_date_{sid}",
             )
-            start_time = st.text_input(
-                "Start time (HH:MM)", value=detail.get("start_time") or "", key=f"e_start_{sid}"
+            start_time = _time_picker(
+                "Start time", detail.get("start_time") or "06:00", f"e_start_{sid}"
             )
-            end_time = st.text_input(
-                "End time (HH:MM)", value=detail.get("end_time") or "", key=f"e_end_{sid}"
+            end_time = _time_picker(
+                "End time", detail.get("end_time") or "11:00", f"e_end_{sid}"
             )
         with c2:
             location_name = st.text_input(
