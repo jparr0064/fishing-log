@@ -655,7 +655,7 @@ def page_log_session():
         if defaults.get("weather") in data_entry.WEATHER_OPTIONS
         else 0
     )
-    style_default = defaults.get("fishing_style") or "Planer Boards"
+    style_default = defaults.get("fishing_style") or "Downlines"
     style_idx = (
         data_entry.FISHING_STYLES.index(style_default)
         if style_default in data_entry.FISHING_STYLES

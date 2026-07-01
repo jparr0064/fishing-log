@@ -36,7 +36,7 @@ class ValidationError(ValueError):
 
 WEATHER_OPTIONS = ["Sunny", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Windy", "Fog", "Snow"]
 
-FISHING_STYLES = ["Planer Boards", "Casting", "Drop Line with Bait", "Spoon Rip Up"]
+FISHING_STYLES = ["Downlines", "Jigging", "Light Lines", "Planer Boards", "Topwater", "Trolling", "Umbrella Rig"]
 
 
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
