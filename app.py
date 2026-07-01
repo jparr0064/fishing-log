@@ -49,7 +49,9 @@ def _inject_css():
     st.markdown(
         """
         <style>
-          .block-container { padding-top: 2rem; max-width: 1180px; padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
+          .block-container { padding-top: 2rem; max-width: 1180px; padding-left: 1rem !important; padding-right: 1rem !important; }
+          [data-testid="stMain"] > div:first-child { padding-left: 0 !important; }
+          section[data-testid="stMain"] { padding-left: 0 !important; }
           [data-testid="stMetric"] {
             background: #ffffff; border: 1px solid #d7e2ec; border-radius: 12px;
             padding: 12px 16px; box-shadow: 0 1px 2px rgba(16,42,67,.05);
