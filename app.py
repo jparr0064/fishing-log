@@ -7,6 +7,7 @@ delegates data work to database / data_entry / search / analytics / map_view.
 """
 from __future__ import annotations
 
+import calendar as _cal
 import os
 from datetime import date, datetime
 
@@ -1292,6 +1293,120 @@ def page_backup():
         st.rerun()
 
 
+_MOON_EMOJI = {
+    "New Moon": "🌑", "Waxing Crescent": "🌒", "First Quarter": "🌓",
+    "Waxing Gibbous": "🌔", "Full Moon": "🌕", "Waning Gibbous": "🌖",
+    "Last Quarter": "🌗", "Waning Crescent": "🌘",
+}
+
+_CAL_CSS = """
+<style>
+.fc-wrap{background:#fff;border:1px solid #e0e0e0;border-radius:14px;padding:20px;}
+.fc-table{width:100%;border-collapse:collapse;table-layout:fixed;}
+.fc-table th{text-align:center;padding:6px 2px;font-size:12px;color:#888;font-weight:600;letter-spacing:.05em;}
+.fc-table td{border:1px solid #e8e8e8;vertical-align:top;padding:5px 7px;height:78px;width:14.28%;box-sizing:border-box;}
+.fc-table td.other{color:#ccc;}
+.fc-table td.caught{background:#e8f5e9;}
+.fc-table td.skunked{background:#fff3e0;}
+.fc-table td.today-cell{border:2.5px solid #00695c;}
+.day-n{font-weight:600;font-size:13px;display:inline-block;}
+.day-n.today-n{background:#00695c;color:#fff;border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;}
+.moon-e{float:right;font-size:13px;line-height:1;}
+.trip-fish{font-size:11px;font-weight:600;color:#2e7d32;margin-top:3px;}
+.trip-sk{font-size:11px;font-weight:600;color:#bf360c;margin-top:3px;}
+.trip-loc{font-size:10px;color:#777;margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
+.fc-legend{display:flex;gap:18px;margin-top:10px;font-size:12px;color:#666;align-items:center;}
+.leg-box{width:13px;height:13px;border:1px solid #ccc;display:inline-block;margin-right:4px;vertical-align:middle;border-radius:2px;}
+.leg-c{background:#e8f5e9;}.leg-s{background:#fff3e0;}.leg-n{background:#fff;}
+</style>
+"""
+
+def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> str:
+    weeks = _cal.Calendar(firstweekday=6).monthdayscalendar(year, month)
+    DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
+    rows = "<tr>" + "".join(f"<th>{d}</th>" for d in DOW) + "</tr>"
+    for week in weeks:
+        rows += "<tr>"
+        for day in week:
+            if day == 0:
+                rows += '<td class="other"></td>'
+                continue
+            is_today = (year == today.year and month == today.month and day == today.day)
+            sess = sessions.get(day)
+            cls = "today-cell " if is_today else ""
+            if sess:
+                cls += "caught" if sess["total_fish"] > 0 else "skunked"
+            rows += f'<td class="{cls}">'
+            if sess and sess["moon_phase"]:
+                rows += f'<span class="moon-e">{_MOON_EMOJI.get(sess["moon_phase"],"")}</span>'
+            num_cls = "day-n today-n" if is_today else "day-n"
+            rows += f'<span class="{num_cls}">{day}</span>'
+            if sess:
+                if sess["total_fish"] > 0:
+                    rows += f'<div class="trip-fish">🐟 {sess["total_fish"]} fish</div>'
+                else:
+                    rows += '<div class="trip-sk">🐟 skunked</div>'
+                rows += f'<div class="trip-loc">{sess["location"]}</div>'
+            rows += "</td>"
+        rows += "</tr>"
+    legend = (
+        '<div class="fc-legend">'
+        '<span><span class="leg-box leg-c"></span>Caught fish</span>'
+        '<span><span class="leg-box leg-s"></span>🐟 Skunked</span>'
+        '<span><span class="leg-box leg-n"></span>No trip</span>'
+        '</div>'
+    )
+    return (
+        _CAL_CSS
+        + '<div class="fc-wrap">'
+        + f'<table class="fc-table">{rows}</table>'
+        + legend
+        + "</div>"
+    )
+
+
+def page_calendar():
+    st.header("📅 Calendar")
+    today = date.today()
+
+    if "cal_year" not in st.session_state:
+        st.session_state.cal_year = today.year
+    if "cal_month" not in st.session_state:
+        st.session_state.cal_month = today.month
+
+    yr = st.session_state.cal_year
+    mo = st.session_state.cal_month
+
+    # Navigation bar
+    c_prev, c_yago, c_title, c_today, c_next = st.columns([1, 1.3, 4, 1, 1])
+    if c_prev.button("◄ Prev"):
+        if mo == 1:
+            st.session_state.cal_month, st.session_state.cal_year = 12, yr - 1
+        else:
+            st.session_state.cal_month = mo - 1
+        st.rerun()
+    if c_yago.button("📅 Year ago"):
+        st.session_state.cal_year = yr - 1
+        st.rerun()
+    c_title.markdown(
+        f"<h3 style='text-align:center;margin:0;padding-top:4px'>"
+        f"{_cal.month_name[mo]} {yr}</h3>",
+        unsafe_allow_html=True,
+    )
+    if c_today.button("Today"):
+        st.session_state.cal_year, st.session_state.cal_month = today.year, today.month
+        st.rerun()
+    if c_next.button("Next ►"):
+        if mo == 12:
+            st.session_state.cal_month, st.session_state.cal_year = 1, yr + 1
+        else:
+            st.session_state.cal_month = mo + 1
+        st.rerun()
+
+    sessions = search.calendar_month(yr, mo)
+    st.markdown(_build_calendar_html(yr, mo, sessions, today), unsafe_allow_html=True)
+
+
 # --------------------------------------------------------------------------
 # Sidebar / routing
 # --------------------------------------------------------------------------
@@ -1310,8 +1425,8 @@ def main():
 
     page = st.sidebar.radio(
         "Navigate",
-        ["Dashboard", "Log a Session", "Browse & Search", "Analytics", "Map",
-         "Export"],
+        ["Dashboard", "Log a Session", "Browse & Search", "Analytics",
+         "Calendar", "Map", "Export"],
     )
 
     _hero_banner()
@@ -1336,6 +1451,7 @@ def main():
         "Log a Session": page_log_session,
         "Browse & Search": page_browse,
         "Analytics": page_analytics,
+        "Calendar": page_calendar,
         "Map": page_map,
         "Export": page_backup,
     }[page]()
