@@ -38,6 +38,17 @@ WEATHER_OPTIONS = ["Sunny", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Wind
 
 FISHING_STYLES = ["Downlines", "Jigging", "Light Lines", "Planer Boards", "Topwater", "Trolling", "Umbrella Rig"]
 
+BAIT_LURE_OPTIONS = [
+    "Live Shad",
+    "Shed Large",
+    "Shed Medium",
+    "Shed Small",
+    "Cut Bait",
+    "Jigging Spoon",
+    "Umbrella Rig",
+    "Topwater Plug",
+]
+
 
 def _parse_time(value: Optional[str]) -> Optional[datetime]:
     if not value:

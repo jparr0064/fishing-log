@@ -596,22 +596,24 @@ def page_log_session():
                 "Water temp (°)", value=float(defaults.get("water_temp") or 60.0)
             )
 
-        # Bait + style: reuse a previous bait (defaults to last used) and/or type a new one.
-        bcol1, bcol2, bcol3 = st.columns(3)
+        # Bait + style: standard options merged with history; type a new one to add it.
+        all_baits = list(dict.fromkeys(data_entry.BAIT_LURE_OPTIONS + prev_baits))
+        bcol1, bcol2, bcol3, bcol4 = st.columns(4)
         with bcol1:
-            bait_options = ["— pick a previous bait —"] + prev_baits
             bait_index = (
-                bait_options.index(last_bait) if last_bait in bait_options else 0
+                all_baits.index(last_bait) if last_bait in all_baits else 0
             )
             bait_choice = st.selectbox(
-                "Bait / lure (previous)", bait_options, index=bait_index
+                "Bait / lure", all_baits, index=bait_index
             )
         with bcol2:
-            new_bait = st.text_input("…or new bait / lure")
+            new_bait = st.text_input("Add new bait / lure")
         with bcol3:
             fishing_style = st.selectbox(
                 "Style of fishing", data_entry.FISHING_STYLES, index=style_idx
             )
+        with bcol4:
+            new_style = st.text_input("Add new fishing style")
 
         notes = st.text_area("Notes", height=80)
 
@@ -628,10 +630,9 @@ def page_log_session():
         spots = list(st.session_state.get("spots", [])) or [
             {"lat": DEFAULT_LAT, "lon": DEFAULT_LON}
         ]
-        # A typed new bait wins; otherwise use the chosen previous one.
-        bait_lure = new_bait.strip() or (
-            bait_choice if bait_choice in prev_baits else ""
-        )
+        # A typed new value wins; otherwise use the chosen dropdown value.
+        bait_lure = new_bait.strip() or bait_choice
+        fishing_style = new_style.strip() or fishing_style
         session = {
             "date": d,
             "start_time": start_time,
@@ -909,16 +910,31 @@ def _edit_form(detail: dict):
                 key=f"e_water_{sid}",
             )
 
-        bcol1, bcol2 = st.columns(2)
+        bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+        existing_bait = detail.get("bait_lure") or ""
+        edit_all_baits = list(dict.fromkeys(
+            data_entry.BAIT_LURE_OPTIONS + search.baits_by_frequency()
+        ))
         with bcol1:
-            bait_lure = st.text_input(
-                "Bait / lure", value=detail.get("bait_lure") or "", key=f"e_bait_{sid}"
+            bait_choice_e = st.selectbox(
+                "Bait / lure", edit_all_baits,
+                index=_idx(edit_all_baits, existing_bait),
+                key=f"e_bait_{sid}",
             )
         with bcol2:
-            fishing_style = st.selectbox(
+            new_bait_e = st.text_input(
+                "Add new bait / lure", key=f"e_newbait_{sid}"
+            )
+        existing_style = detail.get("fishing_style") or ""
+        with bcol3:
+            fishing_style_e = st.selectbox(
                 "Style of fishing", data_entry.FISHING_STYLES,
-                index=_idx(data_entry.FISHING_STYLES, detail.get("fishing_style")),
+                index=_idx(data_entry.FISHING_STYLES, existing_style),
                 key=f"e_style_{sid}",
+            )
+        with bcol4:
+            new_style_e = st.text_input(
+                "Add new fishing style", key=f"e_newstyle_{sid}"
             )
 
         notes = st.text_area("Notes", value=detail.get("notes") or "", key=f"e_notes_{sid}")
@@ -938,7 +954,8 @@ def _edit_form(detail: dict):
             "date": d, "start_time": start_time, "end_time": end_time,
             "location_name": location_name,
             "weather": weather, "air_temp": air_temp, "water_temp": water_temp,
-            "bait_lure": bait_lure, "fishing_style": fishing_style,
+            "bait_lure": new_bait_e.strip() or bait_choice_e,
+            "fishing_style": new_style_e.strip() or fishing_style_e,
             "num_anglers": num_anglers, "notes": notes,
         }
         try:
