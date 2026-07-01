@@ -164,14 +164,25 @@ def _get_user_email() -> str:
     st.markdown("Enter your email to get started. Your data is private to you.")
     with st.form("login_form"):
         email = st.text_input("Email address")
-        if st.form_submit_button("Sign in", type="primary"):
+        c1, c2 = st.columns([2, 1])
+        if c1.form_submit_button("Sign in", type="primary"):
             if "@" in email and "." in email:
                 st.session_state.user_email = email.lower().strip()
                 st.rerun()
             else:
                 st.error("Please enter a valid email address.")
+        if c2.form_submit_button("Try the Demo →"):
+            st.session_state.user_email = DEMO_EMAIL
+            st.rerun()
     st.stop()
     return ""  # unreachable
+
+
+DEMO_EMAIL = "demo@fishinglog.demo"
+
+
+def _is_demo() -> bool:
+    return db.get_current_user() == DEMO_EMAIL
 
 
 @st.cache_resource
@@ -642,6 +653,13 @@ def _time_picker(label: str, default_hhmm: str = "06:00", key: str = "") -> str:
 def page_log_session():
     st.header("➕ Log a Session")
 
+    if _is_demo():
+        st.warning(
+            "This is a read-only demo. Sign in with your own email to log sessions.",
+            icon="🔒",
+        )
+        return
+
     # Spot picker and photo editor live OUTSIDE the form so their controls
     # can rerun interactively (map clicks, rotate/crop).
     _spots_picker("spots", "loc_picker")
@@ -929,7 +947,8 @@ def _render_session_detail(detail: dict, sid: int):
                 st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
             _refresh()
 
-        fcol.checkbox("✅ Filed to DWR", key=fk, on_change=_toggle_filed)
+        fcol.checkbox("✅ Filed to DWR", key=fk, on_change=_toggle_filed,
+                      disabled=_is_demo())
 
     if detail_spots:
         st.markdown(f"**🗺️ Trolling route** ({len(detail_spots)} spot(s)) — "
@@ -949,25 +968,26 @@ def _render_session_detail(detail: dict, sid: int):
         st.image([ph["data"] for ph in session_photos],
                  caption=caps if any(caps) else None, width=240)
 
-    with st.expander("✏️ Edit this session"):
-        skey = f"edit_spots_{sid}"
-        if skey not in st.session_state:
-            st.session_state[skey] = [
-                {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
-                for s in detail.get("spots", [])
-            ]
-        _spots_picker(skey, f"edit_map_{sid}")
-        _edit_form(detail)
-        st.divider()
-        st.markdown("**📷 Photos**")
-        _session_photo_manager(sid)
+    if not _is_demo():
+        with st.expander("✏️ Edit this session"):
+            skey = f"edit_spots_{sid}"
+            if skey not in st.session_state:
+                st.session_state[skey] = [
+                    {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
+                    for s in detail.get("spots", [])
+                ]
+            _spots_picker(skey, f"edit_map_{sid}")
+            _edit_form(detail)
+            st.divider()
+            st.markdown("**📷 Photos**")
+            _session_photo_manager(sid)
 
-    if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
-        data_entry.delete_session(sid)
-        _refresh()
-        st.session_state.pop("browse_sel", None)
-        st.success("Session deleted.")
-        st.rerun()
+        if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
+            data_entry.delete_session(sid)
+            _refresh()
+            st.session_state.pop("browse_sel", None)
+            st.success("Session deleted.")
+            st.rerun()
 
 
 def _edit_form(detail: dict):
@@ -1307,7 +1327,7 @@ _CAL_CSS = """
 .fc-table td{border:1px solid #e8e8e8;vertical-align:top;padding:5px 7px;height:78px;width:14.28%;box-sizing:border-box;}
 .fc-table td.other{color:#ccc;}
 .fc-table td.caught{background:#e8f5e9;}
-.fc-table td.skunked{background:#fff3e0;}
+.fc-table td.skunked{background:#f0f0f0;}
 .fc-table td.today-cell{border:2.5px solid #00695c;}
 .day-n{font-weight:600;font-size:13px;display:inline-block;}
 .day-n.today-n{background:#00695c;color:#fff;border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;}
@@ -1317,7 +1337,7 @@ _CAL_CSS = """
 .trip-loc{font-size:10px;color:#777;margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
 .fc-legend{display:flex;gap:18px;margin-top:10px;font-size:12px;color:#666;align-items:center;}
 .leg-box{width:13px;height:13px;border:1px solid #ccc;display:inline-block;margin-right:4px;vertical-align:middle;border-radius:2px;}
-.leg-c{background:#e8f5e9;}.leg-s{background:#fff3e0;}.leg-n{background:#fff;}
+.leg-c{background:#e8f5e9;}.leg-s{background:#f0f0f0;}.leg-n{background:#fff;}
 </style>
 """
 
@@ -1418,10 +1438,20 @@ def main():
     _inject_css()
 
     st.sidebar.title("🎣 Fishing Log")
-    st.sidebar.caption(f"Signed in as **{user_email}**")
+    if _is_demo():
+        st.sidebar.caption("Viewing **demo data** (read-only)")
+    else:
+        st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
         st.session_state.pop("user_email", None)
         st.rerun()
+
+    if _is_demo():
+        st.info(
+            "**Demo mode — read only.** You're browsing 15 sample Smith Mountain Lake "
+            "striper trips. Sign in with your own email to start logging your catches.",
+            icon="ℹ️",
+        )
 
     page = st.sidebar.radio(
         "Navigate",
@@ -1437,14 +1467,15 @@ def main():
         st.sidebar.info("No sessions yet — add one under **Log a Session**.")
     else:
         st.sidebar.caption(f"{n_sessions} sessions logged.")
-        with st.sidebar.expander("⚠️ Clear my data"):
-            st.caption("Deletes ALL your sessions and fish records. Cannot be undone.")
-            confirm = st.checkbox("Yes, I'm sure")
-            if st.button("Delete all my data", type="primary", disabled=not confirm):
-                db.delete_all_sessions()
-                _refresh()
-                st.success("All your data deleted.")
-                st.rerun()
+        if not _is_demo():
+            with st.sidebar.expander("⚠️ Clear my data"):
+                st.caption("Deletes ALL your sessions and fish records. Cannot be undone.")
+                confirm = st.checkbox("Yes, I'm sure")
+                if st.button("Delete all my data", type="primary", disabled=not confirm):
+                    db.delete_all_sessions()
+                    _refresh()
+                    st.success("All your data deleted.")
+                    st.rerun()
 
     {
         "Dashboard": page_dashboard,
