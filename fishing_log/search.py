@@ -180,9 +180,9 @@ def caught_spot_points(
 
 
 def calendar_month(year: int, month: int) -> dict:
-    """Return {day_of_month: {total_fish, location, moon_phase}} for the calendar view.
+    """Return {day_of_month: [{session_id, total_fish, location, moon_phase}, ...]} for the calendar.
 
-    Multiple sessions on the same day are merged: fish counts sum, first location shown.
+    Each day maps to a list so multiple sessions on the same day are preserved.
     """
     import calendar as _cal
     last_day = _cal.monthrange(year, month)[1]
@@ -190,30 +190,33 @@ def calendar_month(year: int, month: int) -> dict:
     date_to   = f"{year}-{month:02d}-{last_day:02d}"
     query = text("""
         SELECT
-            EXTRACT(DAY FROM s.date::date)::int AS day,
+            s.id                                 AS session_id,
+            EXTRACT(DAY FROM s.date::date)::int  AS day,
             COUNT(f.id)                          AS total_fish,
-            MIN(s.location_name)                 AS location_name,
-            MIN(s.moon_phase)                    AS moon_phase
+            s.location_name,
+            s.moon_phase
         FROM sessions s
         LEFT JOIN fish f ON f.session_id = s.id
         WHERE s.user_email = :email
           AND s.date >= :date_from
           AND s.date <= :date_to
-        GROUP BY EXTRACT(DAY FROM s.date::date)::int
-        ORDER BY day
+        GROUP BY s.id, EXTRACT(DAY FROM s.date::date)::int
+        ORDER BY day, s.start_time
     """)
     with db.get_engine().connect() as conn:
         rows = conn.execute(query, {
             "email": _user(), "date_from": date_from, "date_to": date_to,
         }).mappings().all()
-    return {
-        int(r["day"]): {
+    result: dict = {}
+    for r in rows:
+        d = int(r["day"])
+        result.setdefault(d, []).append({
+            "session_id": int(r["session_id"]),
             "total_fish": int(r["total_fish"]),
             "location":   (r["location_name"] or "")[:22],
             "moon_phase": r["moon_phase"] or "",
-        }
-        for r in rows
-    }
+        })
+    return result
 
 
 def fish_export() -> pd.DataFrame:

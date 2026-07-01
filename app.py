@@ -1327,21 +1327,23 @@ _CAL_CSS = """
 .fc-table td{border:1px solid #e8e8e8;vertical-align:top;padding:5px 7px;height:78px;width:14.28%;box-sizing:border-box;}
 .fc-table td.other{color:#ccc;}
 .fc-table td.caught{background:#e8f5e9;}
-.fc-table td.skunked{background:#f0f0f0;}
+.fc-table td.skunked{background:#b8b8b8;}
 .fc-table td.today-cell{border:2.5px solid #00695c;}
 .day-n{font-weight:600;font-size:13px;display:inline-block;}
 .day-n.today-n{background:#00695c;color:#fff;border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;}
 .moon-e{float:right;font-size:13px;line-height:1;}
 .trip-fish{font-size:11px;font-weight:600;color:#2e7d32;margin-top:3px;}
-.trip-sk{font-size:11px;font-weight:600;color:#bf360c;margin-top:3px;}
+.trip-sk{font-size:11px;font-weight:600;color:#444;margin-top:3px;}
+.trip-multi{font-size:10px;color:#555;margin-top:1px;}
 .trip-loc{font-size:10px;color:#777;margin-top:1px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
 .fc-legend{display:flex;gap:18px;margin-top:10px;font-size:12px;color:#666;align-items:center;}
 .leg-box{width:13px;height:13px;border:1px solid #ccc;display:inline-block;margin-right:4px;vertical-align:middle;border-radius:2px;}
-.leg-c{background:#e8f5e9;}.leg-s{background:#f0f0f0;}.leg-n{background:#fff;}
+.leg-c{background:#e8f5e9;}.leg-s{background:#b8b8b8;}.leg-n{background:#fff;}
 </style>
 """
 
 def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> str:
+    """sessions: {day: [{session_id, total_fish, location, moon_phase}, ...]}"""
     weeks = _cal.Calendar(firstweekday=6).monthdayscalendar(year, month)
     DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
     rows = "<tr>" + "".join(f"<th>{d}</th>" for d in DOW) + "</tr>"
@@ -1352,27 +1354,38 @@ def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> 
                 rows += '<td class="other"></td>'
                 continue
             is_today = (year == today.year and month == today.month and day == today.day)
-            sess = sessions.get(day)
+            day_sessions = sessions.get(day, [])
+            total_fish = sum(s["total_fish"] for s in day_sessions)
+            # Cell color: caught if any session had fish; skunked if at least one trip but all zeroes
             cls = "today-cell " if is_today else ""
-            if sess:
-                cls += "caught" if sess["total_fish"] > 0 else "skunked"
+            if day_sessions:
+                cls += "caught" if total_fish > 0 else "skunked"
             rows += f'<td class="{cls}">'
-            if sess and sess["moon_phase"]:
-                rows += f'<span class="moon-e">{_MOON_EMOJI.get(sess["moon_phase"],"")}</span>'
+            # Moon from first session of the day
+            moon = day_sessions[0]["moon_phase"] if day_sessions else ""
+            if moon:
+                rows += f'<span class="moon-e">{_MOON_EMOJI.get(moon,"")}</span>'
             num_cls = "day-n today-n" if is_today else "day-n"
             rows += f'<span class="{num_cls}">{day}</span>'
-            if sess:
-                if sess["total_fish"] > 0:
-                    rows += f'<div class="trip-fish">🐟 {sess["total_fish"]} fish</div>'
+            if day_sessions:
+                n = len(day_sessions)
+                if n > 1:
+                    # Multiple trips — show aggregate
+                    rows += f'<div class="trip-fish">🐟 {total_fish} fish</div>'
+                    rows += f'<div class="trip-multi">{n} trips</div>'
                 else:
-                    rows += '<div class="trip-sk">🐟 skunked</div>'
-                rows += f'<div class="trip-loc">{sess["location"]}</div>'
+                    s = day_sessions[0]
+                    if s["total_fish"] > 0:
+                        rows += f'<div class="trip-fish">🐟 {s["total_fish"]} fish</div>'
+                    else:
+                        rows += '<div class="trip-sk">🦨 skunked</div>'
+                    rows += f'<div class="trip-loc">{s["location"]}</div>'
             rows += "</td>"
         rows += "</tr>"
     legend = (
         '<div class="fc-legend">'
-        '<span><span class="leg-box leg-c"></span>Caught fish</span>'
-        '<span><span class="leg-box leg-s"></span>🐟 Skunked</span>'
+        '<span><span class="leg-box leg-c"></span>🐟 Caught fish</span>'
+        '<span><span class="leg-box leg-s"></span>🦨 Skunked</span>'
         '<span><span class="leg-box leg-n"></span>No trip</span>'
         '</div>'
     )
@@ -1425,6 +1438,31 @@ def page_calendar():
 
     sessions = search.calendar_month(yr, mo)
     st.markdown(_build_calendar_html(yr, mo, sessions, today), unsafe_allow_html=True)
+
+    # Clickable session list below the calendar
+    if sessions:
+        st.markdown("---")
+        st.markdown("**Trips this month** — click a row to read the full session detail.")
+        sel = st.session_state.get("cal_sel_sid")
+        for day in sorted(sessions.keys()):
+            for s in sessions[day]:
+                sid = s["session_id"]
+                fish_txt = f"🐟 {s['total_fish']} fish" if s["total_fish"] > 0 else "🦨 skunked"
+                date_str = f"{yr}-{mo:02d}-{day:02d}"
+                label = f"{date_str}  ·  {s['location']}  ·  {fish_txt}"
+                btn_label = "▼ Close" if sel == sid else "View →"
+                c1, c2 = st.columns([6, 1])
+                c1.markdown(label)
+                if c2.button(btn_label, key=f"cal_view_{sid}"):
+                    st.session_state.cal_sel_sid = None if sel == sid else sid
+                    st.rerun()
+
+        sel_sid = st.session_state.get("cal_sel_sid")
+        if sel_sid:
+            detail = search.get_session(sel_sid)
+            if detail:
+                st.markdown("---")
+                _render_session_detail(detail, sel_sid)
 
 
 # --------------------------------------------------------------------------
