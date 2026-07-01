@@ -95,9 +95,14 @@ def _inject_css():
 
 
 def _hero_banner():
-    """Top-of-app hero: title + at-a-glance season stats (trips / fish / best)."""
+    """Top-of-app hero: title + current-year trips/fish + all-time personal best."""
+    curr_yr = date.today().year
+    yoy = analytics.year_over_year()
+    yr_row = yoy[yoy["year"] == curr_yr] if not yoy.empty else None
+    trips = int(yr_row["sessions"].iloc[0]) if yr_row is not None and not yr_row.empty else 0
+    fish  = int(yr_row["total_fish"].iloc[0]) if yr_row is not None and not yr_row.empty else 0
     stats = analytics.overall_stats()
-    best = _fmt_len(stats.get("biggest_length")) or "—"
+    best  = _fmt_len(stats.get("biggest_length")) or "—"
     st.markdown(
         f"""
         <div class='hero'>
@@ -106,9 +111,9 @@ def _hero_banner():
             <div class='hero-sub'>Smith Mountain Lake &middot; striper trolling</div>
           </div>
           <div class='hero-stats'>
-            <div class='hero-chip'><span class='n'>{stats['sessions']}</span><span class='l'>trips</span></div>
-            <div class='hero-chip'><span class='n'>{stats['total_fish']}</span><span class='l'>fish</span></div>
-            <div class='hero-chip'><span class='n'>{best}</span><span class='l'>best</span></div>
+            <div class='hero-chip'><span class='n'>{trips}</span><span class='l'>{curr_yr} trips</span></div>
+            <div class='hero-chip'><span class='n'>{fish}</span><span class='l'>{curr_yr} fish</span></div>
+            <div class='hero-chip'><span class='n'>{best}</span><span class='l'>all-time best</span></div>
           </div>
         </div>
         """,
