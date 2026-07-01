@@ -869,6 +869,13 @@ def _edit_form(detail: dict):
     def _idx(options, value, default=0):
         return options.index(value) if value in options else default
 
+    # Compute bait list outside the form to avoid DB calls inside form context.
+    edit_all_baits = list(dict.fromkeys(
+        data_entry.BAIT_LURE_OPTIONS + search.baits_by_frequency()
+    ))
+    existing_bait = detail.get("bait_lure") or ""
+    existing_style = detail.get("fishing_style") or ""
+
     with st.form(f"edit_form_{sid}"):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -911,10 +918,6 @@ def _edit_form(detail: dict):
             )
 
         bcol1, bcol2, bcol3, bcol4 = st.columns(4)
-        existing_bait = detail.get("bait_lure") or ""
-        edit_all_baits = list(dict.fromkeys(
-            data_entry.BAIT_LURE_OPTIONS + search.baits_by_frequency()
-        ))
         with bcol1:
             bait_choice_e = st.selectbox(
                 "Bait / lure", edit_all_baits,
@@ -925,7 +928,6 @@ def _edit_form(detail: dict):
             new_bait_e = st.text_input(
                 "Add new bait / lure", key=f"e_newbait_{sid}"
             )
-        existing_style = detail.get("fishing_style") or ""
         with bcol3:
             fishing_style_e = st.selectbox(
                 "Style of fishing", data_entry.FISHING_STYLES,
