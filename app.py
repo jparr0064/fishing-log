@@ -64,7 +64,7 @@ def _inject_css():
             flex-wrap: wrap; gap: 16px;
           }
           .hero-title { color: #fff; font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
-          .hero-sub { color: #cdeef0; font-size: .9rem; margin-top: 3px; }
+          .hero-loc { color: #fff; font-size: 1.1rem; font-weight: 600; margin-top: 6px; letter-spacing: .02em; }
           .hero-stats { display: flex; gap: 10px; }
           .hero-chip {
             background: rgba(255,255,255,.15); border-radius: 10px;
@@ -96,7 +96,7 @@ def _hero_banner():
         <div class='hero'>
           <div>
             <div class='hero-title'>🎣 Fishing Log</div>
-            <div class='hero-sub'>Smith Mountain Lake &middot; striper trolling</div>
+            <div class='hero-loc'>📍 Smith Mountain Lake</div>
           </div>
           <div class='hero-stats'>
             <div class='hero-chip'><span class='n'>{trips}</span><span class='l'>{curr_yr} trips</span></div>
