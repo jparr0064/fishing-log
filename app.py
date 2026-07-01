@@ -18,7 +18,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from fishing_log import (
-    analytics, backup, data_entry, database as db, dwr_report, map_view, search,
+    analytics, data_entry, database as db, dwr_report, map_view, search,
 )
 
 # Optional GPS button component; app still works if it isn't installed.
@@ -1133,42 +1133,38 @@ def page_map():
 
 
 def page_backup():
-    st.header("💾 Backup & Export")
+    st.header("💾 Export")
+    st.markdown(
+        "Download your data anytime as CSV files — open them in Excel or Google Sheets. "
+        "These files are also your backup, so save them somewhere safe periodically."
+    )
 
-    st.subheader("Export to CSV (for Excel)")
     sessions_df = search.list_sessions()
     fish_df = search.fish_export()
-    c1, c2 = st.columns(2)
-    c1.download_button(
-        "⬇ Sessions CSV", sessions_df.to_csv(index=False).encode("utf-8"),
-        file_name="fishing_sessions.csv", mime="text/csv",
-        disabled=sessions_df.empty,
-    )
-    c2.download_button(
-        "⬇ Fish CSV (one row per fish)", fish_df.to_csv(index=False).encode("utf-8"),
-        file_name="fishing_fish.csv", mime="text/csv",
-        disabled=fish_df.empty,
-    )
 
-    st.divider()
-    st.subheader("Backups")
-    st.caption("A backup is made automatically each time the app starts "
-               "(the 10 most recent are kept). You can also restore one here.")
-    backups = backup.list_backups()
-    if not backups:
-        st.info("No backups yet.")
-        return
-    labels = {p.name: p for p in backups}
-    chosen = st.selectbox("Available backups (newest first)", list(labels.keys()))
-    st.caption("Restoring replaces your current data with the selected backup. "
-               "Your current data is itself backed up first, just in case.")
-    confirm = st.checkbox("Yes, restore this backup")
-    if st.button("♻ Restore selected backup", type="primary", disabled=not confirm):
-        backup.restore_backup(labels[chosen])
-        st.cache_data.clear()
-        st.cache_resource.clear()
-        st.success(f"Restored from {chosen}. Reloading…")
-        st.rerun()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**Sessions** — one row per trip")
+        st.caption("Date, location, weather, conditions, hours fished, bait, style, notes.")
+        st.download_button(
+            "⬇ Download Sessions CSV",
+            sessions_df.to_csv(index=False).encode("utf-8"),
+            file_name="fishing_sessions.csv",
+            mime="text/csv",
+            disabled=sessions_df.empty,
+            use_container_width=True,
+        )
+    with c2:
+        st.markdown("**Fish** — one row per fish caught")
+        st.caption("Species, length, weight, depth, kept/released — linked to each session.")
+        st.download_button(
+            "⬇ Download Fish CSV",
+            fish_df.to_csv(index=False).encode("utf-8"),
+            file_name="fishing_fish.csv",
+            mime="text/csv",
+            disabled=fish_df.empty,
+            use_container_width=True,
+        )
 
 
 _MOON_EMOJI = {
