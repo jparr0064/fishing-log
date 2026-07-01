@@ -971,7 +971,7 @@ def _render_whats_working():
         })
         st.dataframe(
             show[[title, "sessions", "success %", "fish/hr", "avg fish"]],
-            width="stretch", hide_index=True,
+            use_container_width=True, hide_index=True,
         )
         cdf = tbl.copy()
         cdf["cat"] = cdf[col].astype(str)
@@ -1008,7 +1008,7 @@ def page_analytics():
             # Altair fields can't contain '%', so use a chart-friendly copy.
             chart_df = tbl.rename(columns={"success_rate_%": "success_rate"})
             st.subheader(f"Monthly summary — {year}")
-            st.dataframe(tbl, width="stretch", hide_index=True)
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
 
             st.subheader("Fish caught per month")
             st.altair_chart(
@@ -1035,7 +1035,7 @@ def page_analytics():
             st.info("No size data yet — add length/weight when logging fish.")
         else:
             st.subheader(f"Average & max size by month — {year}")
-            st.dataframe(sizes, width="stretch", hide_index=True)
+            st.dataframe(sizes, use_container_width=True, hide_index=True)
             melted = sizes.melt(
                 id_vars="month", value_vars=["avg_length", "max_length"],
                 var_name="metric", value_name="inches",
@@ -1087,7 +1087,7 @@ def page_analytics():
                     "longest_date": "Longest date", "heaviest_lb": "Heaviest (lb)",
                     "heaviest_date": "Heaviest date",
                 }),
-                width="stretch", hide_index=True,
+                use_container_width=True, hide_index=True,
             )
 
 
