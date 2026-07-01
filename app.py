@@ -37,8 +37,8 @@ DEFAULT_LON = -79.70913
 # The only species this log tracks.
 SPECIES = ["Striper", "Largemouth Bass", "Smallmouth Bass", "Catfish", "Muskie"]
 
-# Default "From" date for Map and Browse filters (first log).
-DEFAULT_FROM_DATE = date(2026, 6, 7)
+# Default "From" date for Map and Browse filters — start of year so all trips show.
+DEFAULT_FROM_DATE = date(2026, 1, 1)
 
 # Okabe-Ito color-blind-safe palette (distinguishable across CVD types).
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
