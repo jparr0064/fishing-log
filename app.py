@@ -18,20 +18,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from fishing_log import (
-    analytics, backup, data_entry, database as db, dwr_report, map_view, media, search,
+    analytics, backup, data_entry, database as db, dwr_report, map_view, search,
 )
-
-try:
-    from PIL import Image
-    _PIL_OK = True
-except ImportError:
-    _PIL_OK = False
-
-try:
-    from streamlit_cropper import st_cropper as _st_cropper
-    _CROPPER_OK = True
-except Exception:
-    _CROPPER_OK = False
 
 # Optional GPS button component; app still works if it isn't installed.
 try:
@@ -187,7 +175,7 @@ DEMO_EMAIL = "demo@fishinglog.demo"
 
 
 def _is_demo() -> bool:
-    return db.get_current_user() == DEMO_EMAIL
+    return db.get_current_user() == DEMO_EMAIL and not st.session_state.get("demo_admin_toggle")
 
 
 @st.cache_resource
@@ -416,122 +404,6 @@ def _spots_picker(state_key: str, map_key: str):
             sp["caught"] = bool(st.session_state[f"{map_key}_c{i}"])
 
 
-def _photo_workbench(key_prefix: str):
-    """Upload + EXIF-correct + rotate + crop one image. Returns the current
-    cropped PIL image, or None if nothing is loaded. State is per key_prefix.
-
-    The crop widget's key includes a version counter so it re-instantiates after
-    each rotation — otherwise st_cropper keeps showing the original orientation.
-    """
-    img_key, ver_key, up_key = f"{key_prefix}_img", f"{key_prefix}_ver", f"{key_prefix}_upk"
-    st.session_state.setdefault(img_key, None)
-    st.session_state.setdefault(ver_key, 0)
-    st.session_state.setdefault(up_key, 0)
-
-    up = st.file_uploader(
-        "Choose a photo",
-        type=["jpg", "jpeg", "png", "gif", "bmp", "webp"],
-        accept_multiple_files=False,
-        key=f"{key_prefix}_up_{st.session_state[up_key]}",
-    )
-    if up is not None and st.session_state[img_key] is None:
-        st.session_state[img_key] = media.load_image_oriented(up)  # honor EXIF
-        st.session_state[ver_key] += 1
-
-    if st.session_state[img_key] is None:
-        return None
-
-    rot1, rot2, _ = st.columns([1, 1, 4])
-    if rot1.button("↺ Rotate left", key=f"{key_prefix}_rl"):
-        st.session_state[img_key] = st.session_state[img_key].transpose(Image.Transpose.ROTATE_90)
-        st.session_state[ver_key] += 1
-        st.rerun()
-    if rot2.button("↻ Rotate right", key=f"{key_prefix}_rr"):
-        st.session_state[img_key] = st.session_state[img_key].transpose(Image.Transpose.ROTATE_270)
-        st.session_state[ver_key] += 1
-        st.rerun()
-
-    st.caption("Drag the box to crop. The preview is exactly what will be saved.")
-    edit_col, prev_col = st.columns([3, 2])
-    with edit_col:
-        cropped = st_cropper(
-            st.session_state[img_key],
-            realtime_update=True,
-            box_color="#1f78b4",
-            aspect_ratio=None,
-            key=f"{key_prefix}_crop_{st.session_state[ver_key]}",
-        )
-    with prev_col:
-        st.image(cropped, caption="Preview", width=220)
-    return cropped
-
-
-def _clear_workbench(key_prefix: str):
-    st.session_state[f"{key_prefix}_img"] = None
-    st.session_state[f"{key_prefix}_upk"] = st.session_state.get(f"{key_prefix}_upk", 0) + 1
-    st.session_state[f"{key_prefix}_ver"] = st.session_state.get(f"{key_prefix}_ver", 0) + 1
-
-
-def _photo_editor():
-    """New-session photo staging: edited images accumulate in
-    ``st.session_state.pending_photos`` and are saved when the form submits.
-    """
-    st.markdown("**📷 Photos** — upload, rotate/crop, then add to the trip (optional).")
-    st.session_state.setdefault("pending_photos", [])
-
-    cropped = _photo_workbench("new")
-    if cropped is not None:
-        add_col, discard_col, _ = st.columns([1, 1, 4])
-        if add_col.button("➕ Add to trip", type="primary", key="new_add"):
-            st.session_state.pending_photos.append(cropped.convert("RGB"))
-            _clear_workbench("new")
-            st.rerun()
-        if discard_col.button("✖ Discard", key="new_discard"):
-            _clear_workbench("new")
-            st.rerun()
-
-    pending = st.session_state.pending_photos
-    if pending:
-        st.write(f"**{len(pending)} photo(s) ready for this trip:**")
-        cols = st.columns(min(4, len(pending)))
-        for i, p in enumerate(pending):
-            with cols[i % len(cols)]:
-                st.image(p, width=180)
-                if st.button("Remove", key=f"rm_photo_{i}"):
-                    pending.pop(i)
-                    st.rerun()
-
-
-def _session_photo_manager(session_id: int):
-    """View/remove existing photos and add new ones to an EXISTING session
-    (used in edit mode; saves immediately rather than staging)."""
-    kp = f"edit{session_id}"
-    photos = media.get_photos(session_id)
-    if photos:
-        st.caption("Current photos:")
-        cols = st.columns(min(4, len(photos)))
-        for i, ph in enumerate(photos):
-            with cols[i % len(cols)]:
-                st.image(ph["data"], width=160)
-                if st.button("Remove", key=f"{kp}_rm_{ph['id']}"):
-                    media.delete_photo(ph["id"])
-                    _refresh()
-                    st.rerun()
-
-    st.markdown("**Add a photo**")
-    cropped = _photo_workbench(kp)
-    if cropped is not None:
-        add_col, discard_col, _ = st.columns([1, 1, 4])
-        if add_col.button("➕ Save photo", type="primary", key=f"{kp}_add"):
-            media.save_pil_images(session_id, [cropped.convert("RGB")])
-            _clear_workbench(kp)
-            _refresh()
-            st.rerun()
-        if discard_col.button("✖ Discard", key=f"{kp}_discard"):
-            _clear_workbench(kp)
-            st.rerun()
-
-
 def _blank_fish_df(rows: int = 5) -> pd.DataFrame:
     return pd.DataFrame({
         "species": [None] * rows, "length": [0.0] * rows,
@@ -665,10 +537,8 @@ def page_log_session():
         )
         return
 
-    # Spot picker and photo editor live OUTSIDE the form so their controls
-    # can rerun interactively (map clicks, rotate/crop).
+    # Spot picker lives outside the form so map clicks can rerun interactively.
     _spots_picker("spots", "loc_picker")
-    _photo_editor()
 
     # Smart defaults: pre-fill from the most recent session and known baits.
     defaults = search.recent_defaults()
@@ -765,20 +635,12 @@ def page_log_session():
         }
         try:
             new_id = data_entry.add_session(session, fish, spots)
-            saved_photos = media.save_pil_images(
-                new_id, st.session_state.get("pending_photos", [])
-            )
             _refresh()
             total = len(fish)
-            # Clear staged spots/photos for the next entry.
             _clear_spot_state("spots", "loc_picker")
-            st.session_state.pending_photos = []
-            st.session_state.uploader_key = st.session_state.get("uploader_key", 0) + 1
             st.session_state["pending_dwr_sid"] = new_id
-            photo_note = f" ({len(saved_photos)} photo(s))" if saved_photos else ""
             st.session_state["log_saved_msg"] = (
-                f"✅ Session saved — {total} fish, {len(spots)} spot(s) "
-                f"at {location_name}{photo_note}."
+                f"✅ Session saved — {total} fish, {len(spots)} spot(s) at {location_name}."
             )
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
@@ -814,16 +676,11 @@ def _filter_controls(key_prefix: str):
 
 def _trip_card(r):
     """A compact, clickable trip summary card for the Browse grid."""
-    photos = media.get_photos(int(r.id))
-    thumb = next((p["data"] for p in photos), None)
     selected = st.session_state.get("browse_sel") == int(r.id)
     with st.container(border=True):
         cthumb, cinfo = st.columns([1, 2])
-        if thumb:
-            cthumb.image(thumb, width=110)
-        else:
-            cthumb.markdown("<div style='font-size:40px;text-align:center'>🎣</div>",
-                            unsafe_allow_html=True)
+        cthumb.markdown("<div style='font-size:40px;text-align:center'>🎣</div>",
+                        unsafe_allow_html=True)
         big = _fmt_len(getattr(r, "biggest_length", None))
         big_txt = f" · biggest {big}" if big else ""
         water = getattr(r, "water_temp", None)
@@ -851,37 +708,22 @@ def page_browse():
         st.info("No sessions match these filters.")
         return
 
-    tab_trips, tab_gallery = st.tabs([f"Trips ({len(df)})", "Photo gallery"])
+    sessions = list(df.itertuples())
+    ids = [int(r.id) for r in sessions]
+    if st.session_state.get("browse_sel") not in ids:
+        st.session_state["browse_sel"] = ids[0]
 
-    with tab_trips:
-        sessions = list(df.itertuples())
-        ids = [int(r.id) for r in sessions]
-        if st.session_state.get("browse_sel") not in ids:
-            st.session_state["browse_sel"] = ids[0]
+    for i in range(0, len(sessions), 2):  # 2 cards per row
+        cols = st.columns(2)
+        for j, r in enumerate(sessions[i:i + 2]):
+            with cols[j]:
+                _trip_card(r)
 
-        for i in range(0, len(sessions), 2):  # 2 cards per row
-            cols = st.columns(2)
-            for j, r in enumerate(sessions[i:i + 2]):
-                with cols[j]:
-                    _trip_card(r)
-
-        st.divider()
-        detail = search.get_session(st.session_state["browse_sel"])
-        if detail:
-            st.subheader(f"Trip detail — {detail['date']} · {detail['location_name']}")
-            _render_session_detail(detail, st.session_state["browse_sel"])
-
-    with tab_gallery:
-        gallery = []
-        for r in df.itertuples():
-            for ph in media.get_photos(int(r.id)):
-                cap = ph.get("caption") or f"{r.date} · {int(r.total_fish)} fish"
-                gallery.append((ph["data"], cap))
-        if not gallery:
-            st.caption("No photos yet — add some when logging a trip.")
-        else:
-            st.caption(f"{len(gallery)} photo(s) — hover and click ⛶ to enlarge.")
-            st.image([p for p, _ in gallery], caption=[c for _, c in gallery], width=200)
+    st.divider()
+    detail = search.get_session(st.session_state["browse_sel"])
+    if detail:
+        st.subheader(f"Trip detail — {detail['date']} · {detail['location_name']}")
+        _render_session_detail(detail, st.session_state["browse_sel"])
 
 
 def _render_session_detail(detail: dict, sid: int):
@@ -966,13 +808,6 @@ def _render_session_detail(detail: dict, sid: int):
         st_folium(map_view.build_route_map(route_pts), height=320,
                   use_container_width=True, returned_objects=[], key=f"route_{sid}")
 
-    session_photos = media.get_photos(sid)
-    if session_photos:
-        st.markdown("**Photos** — hover a photo and click the ⛶ icon (top-right) to view full size.")
-        caps = [ph.get("caption") or "" for ph in session_photos]
-        st.image([ph["data"] for ph in session_photos],
-                 caption=caps if any(caps) else None, width=240)
-
     if not _is_demo():
         with st.expander("✏️ Edit this session"):
             skey = f"edit_spots_{sid}"
@@ -983,9 +818,6 @@ def _render_session_detail(detail: dict, sid: int):
                 ]
             _spots_picker(skey, f"edit_map_{sid}")
             _edit_form(detail)
-            st.divider()
-            st.markdown("**📷 Photos**")
-            _session_photo_manager(sid)
 
         if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
             data_entry.delete_session(sid)
@@ -1478,11 +1310,23 @@ def main():
     _bootstrap()
     user_email = _get_user_email()   # shows login screen if not signed in
     db.set_current_user(user_email)  # all DB calls in this run are scoped to this user
+
+    # Demo admin: let the dev account edit demo data directly via a sidebar toggle.
+    dev_email = st.secrets.get("dev_user_email", "")
+    if user_email == dev_email:
+        demo_admin = st.sidebar.toggle("🛠 Edit demo data", key="demo_admin_toggle")
+        if demo_admin:
+            db.set_current_user(DEMO_EMAIL)
+    else:
+        st.session_state.pop("demo_admin_toggle", None)
+
     _inject_css()
 
     st.sidebar.title("🎣 Fishing Log")
     if _is_demo():
         st.sidebar.caption("Viewing **demo data** (read-only)")
+    elif st.session_state.get("demo_admin_toggle"):
+        st.sidebar.caption(f"🛠 Editing **demo data**")
     else:
         st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
@@ -1495,6 +1339,8 @@ def main():
             "striper trips. Sign in with your own email to start logging your catches.",
             icon="ℹ️",
         )
+    elif st.session_state.get("demo_admin_toggle"):
+        st.warning("🛠 **Demo admin mode** — changes here are live for all demo viewers.", icon="🛠️")
 
     page = st.sidebar.radio(
         "Navigate",
