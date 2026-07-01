@@ -420,7 +420,7 @@ def _fish_editor(df: pd.DataFrame, key: str):
         df = df.assign(depth=None)
     df["kept"] = df["kept"].fillna(False).astype(bool)
     return st.data_editor(
-        df, num_rows="dynamic", width="stretch",
+        df, num_rows="dynamic", use_container_width=True,
         column_config={
             "species": st.column_config.SelectboxColumn("Species", options=SPECIES, required=False),
             "length": st.column_config.NumberColumn("Length (in)", min_value=0.0, step=0.5, format="%.1f"),
