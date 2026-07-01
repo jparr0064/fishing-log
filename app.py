@@ -193,12 +193,13 @@ def _refresh():
 
 
 @st.cache_data
-def _cached_sessions(date_from, date_to, location, species):
+def _cached_sessions(user_email, date_from, date_to, location, species):
+    # user_email is only part of the cache key; actual scoping is via db.get_current_user()
     return search.list_sessions(date_from, date_to, location, species)
 
 
 @st.cache_data
-def _cached_map_rows(date_from, date_to, location, species):
+def _cached_map_rows(user_email, date_from, date_to, location, species):
     return search.map_rows(date_from, date_to, location, species)
 
 
@@ -705,7 +706,7 @@ def page_browse():
     st.header("🔍 Browse & Search")
     if msg := st.session_state.pop("saved_msg", None):
         st.success(msg)
-    df = _cached_sessions(*_filter_controls("browse"))
+    df = _cached_sessions(db.get_current_user(), *_filter_controls("browse"))
     if df.empty:
         st.info("No sessions match these filters.")
         return
@@ -1100,7 +1101,7 @@ def page_map():
         fullscreen = st.checkbox("⛶ Full-screen map", value=False)
 
     filters = _filter_controls("map")
-    df = _cached_map_rows(*filters)
+    df = _cached_map_rows(db.get_current_user(), *filters)
     if df.empty:
         st.info("No spots match these filters.")
         return
