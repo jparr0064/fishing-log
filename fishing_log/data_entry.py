@@ -40,9 +40,6 @@ FISHING_STYLES = ["Downlines", "Jigging", "Light Lines", "Planer Boards", "Topwa
 
 BAIT_LURE_OPTIONS = [
     "Live Shad",
-    "Shed Large",
-    "Shed Medium",
-    "Shed Small",
     "Cut Bait",
     "Jigging Spoon",
     "Umbrella Rig",
