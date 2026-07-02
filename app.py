@@ -138,35 +138,61 @@ SESSION_DISPLAY_COLS = {
 }
 
 
-def _get_user_email() -> str:
-    """Get the logged-in user's email. Uses Streamlit viewer auth on Cloud,
-    falls back to a simple email form for local development."""
-    # Streamlit Community Cloud viewer auth (set via app settings → Viewer auth)
-    try:
-        user = st.experimental_user
-        if user and getattr(user, "email", None):
-            return user.email.lower().strip()
-    except Exception:
-        pass
+def _oidc_active() -> bool:
+    """True when OIDC auth is configured (st.login/st.user available)."""
+    return hasattr(st.user, "is_logged_in")
 
-    # Local dev fallback: simple one-time email form
-    if st.session_state.get("user_email"):
-        return st.session_state.user_email
 
+def _show_login_page(oidc: bool) -> None:
+    """Render the sign-in / demo landing page."""
     st.markdown("## 🎣 Fishing Log")
-    st.markdown("Enter your email to get started. Your data is private to you.")
-    with st.form("login_form"):
-        email = st.text_input("Email address")
+    if oidc:
+        st.markdown("Sign in with your Google account to access your fishing log.")
         c1, c2 = st.columns([2, 1])
-        if c1.form_submit_button("Sign in", type="primary"):
-            if "@" in email and "." in email:
-                st.session_state.user_email = email.lower().strip()
-                st.rerun()
-            else:
-                st.error("Please enter a valid email address.")
-        if c2.form_submit_button("Try the Demo →"):
+        if c1.button("Sign in with Google", type="primary"):
+            st.login("google")
+        if c2.button("Try the Demo →"):
             st.session_state.user_email = DEMO_EMAIL
             st.rerun()
+    else:
+        st.markdown("Enter your email to get started. Your data is private to you.")
+        with st.form("login_form"):
+            email = st.text_input("Email address")
+            c1, c2 = st.columns([2, 1])
+            if c1.form_submit_button("Sign in", type="primary"):
+                if "@" in email and "." in email:
+                    st.session_state.user_email = email.lower().strip()
+                    st.rerun()
+                else:
+                    st.error("Please enter a valid email address.")
+            if c2.form_submit_button("Try the Demo →"):
+                st.session_state.user_email = DEMO_EMAIL
+                st.rerun()
+
+
+def _get_user_email() -> str:
+    """Return the current user's email, or stop to show the login screen.
+
+    Three modes:
+    - Demo: session_state["user_email"] == DEMO_EMAIL (bypasses auth in all modes)
+    - OIDC (production): [auth] is configured in secrets.toml → use st.login/st.user
+    - Local dev: no OIDC configured → plain email form
+    """
+    # Demo shortcut — works regardless of auth mode
+    if st.session_state.get("user_email") == DEMO_EMAIL:
+        return DEMO_EMAIL
+
+    if _oidc_active():
+        if st.user.is_logged_in:
+            return st.user.email.lower().strip()
+        _show_login_page(oidc=True)
+        st.stop()
+        return ""  # unreachable
+
+    # Local dev fallback
+    if st.session_state.get("user_email"):
+        return st.session_state.user_email
+    _show_login_page(oidc=False)
     st.stop()
     return ""  # unreachable
 
@@ -187,20 +213,52 @@ def _bootstrap():
     return True
 
 
+def _cache_ver() -> int:
+    """Per-user cache generation. Bumped on write to invalidate only this
+    user's cached reads (unlike st.cache_data.clear(), which nukes everyone)."""
+    return st.session_state.get("_cache_ver", 0)
+
+
 def _refresh():
-    """Clear cached data after a write so tables/map update."""
-    st.cache_data.clear()
+    """Invalidate this user's cached reads after a write.
+
+    Bumps a per-user version counter that is part of every cache key, so other
+    users' cached data is untouched. The ttl on the cached funcs evicts the now-
+    orphaned entries. (Previously called st.cache_data.clear(), clearing ALL users.)
+    """
+    st.session_state["_cache_ver"] = _cache_ver() + 1
 
 
-@st.cache_data
-def _cached_sessions(user_email, date_from, date_to, location, species):
-    # user_email is only part of the cache key; actual scoping is via db.get_current_user()
+# user_email + cache_ver are cache-key parts only; actual scoping is via
+# db.get_current_user(). ttl caps how long stale/orphaned entries live.
+@st.cache_data(ttl=300)
+def _cached_sessions(user_email, date_from, date_to, location, species, cache_ver=0):
     return search.list_sessions(date_from, date_to, location, species)
 
 
-@st.cache_data
-def _cached_map_rows(user_email, date_from, date_to, location, species):
+@st.cache_data(ttl=300)
+def _cached_map_rows(user_email, date_from, date_to, location, species, cache_ver=0):
     return search.map_rows(date_from, date_to, location, species)
+
+
+@st.cache_data(ttl=300)
+def _cached_overall_stats(user_email, cache_ver=0):
+    return analytics.overall_stats()
+
+
+@st.cache_data(ttl=300)
+def _cached_personal_bests(user_email, cache_ver=0):
+    return analytics.personal_bests()
+
+
+@st.cache_data(ttl=300)
+def _cached_year_over_year(user_email, cache_ver=0):
+    return analytics.year_over_year()
+
+
+@st.cache_data(ttl=300)
+def _cached_by_month(user_email, year, cache_ver=0):
+    return analytics.by_month(year)
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +267,9 @@ def _cached_map_rows(user_email, date_from, date_to, location, species):
 
 def page_dashboard():
     st.header("🎣 Dashboard")
-    stats = analytics.overall_stats()
+    user = db.get_current_user()
+    ver = _cache_ver()
+    stats = _cached_overall_stats(user, ver)
     if stats["sessions"] == 0:
         st.info("No sessions yet. Add your first trip under **Log a Session**.")
         return
@@ -222,7 +282,7 @@ def page_dashboard():
     c4.metric("Hours fished", stats["total_hours"])
 
     # Personal bests at a glance
-    best = analytics.personal_bests()
+    best = _cached_personal_bests(user, ver)
     if not best.empty:
         measured = best.dropna(subset=["longest_in"])
         heaviest = best.dropna(subset=["heaviest_lb"])
@@ -237,7 +297,7 @@ def page_dashboard():
                       f'{top["species"]} · {top["heaviest_date"]}')
 
     # Year-over-year snapshot
-    yoy = analytics.year_over_year()
+    yoy = _cached_year_over_year(user, ver)
     if not yoy.empty:
         from datetime import date as _dt
         curr_yr = _dt.today().year
@@ -262,7 +322,7 @@ def page_dashboard():
         y4.metric(f"{prev_yr} fish",  p_fish)
 
     # DWR filing nudge
-    all_df = search.list_sessions()
+    all_df = _cached_sessions(user, None, None, None, None, cache_ver=ver)
     if not all_df.empty and "dwr_filed" in all_df.columns:
         unfiled = all_df[~all_df["dwr_filed"].fillna(0).astype(bool)]
         if not unfiled.empty:
@@ -279,7 +339,7 @@ def page_dashboard():
         st.subheader("Fish per month")
         years = analytics.available_years()
         year = years[0] if years else None
-        monthly = analytics.by_month(year)
+        monthly = _cached_by_month(user, year, ver)
         if not monthly.empty:
             st.caption(f"Season {year}")
             st.altair_chart(
@@ -292,7 +352,7 @@ def page_dashboard():
 
     with right:
         st.subheader("Recent trips")
-        recent = search.list_sessions().head(5)
+        recent = _cached_sessions(user, None, None, None, None, cache_ver=ver).head(5)
         if recent.empty:
             st.caption("No trips yet.")
         for r in recent.itertuples():
@@ -576,13 +636,14 @@ def page_log_session():
             )
         with col3:
             weather = st.selectbox("Weather", data_entry.WEATHER_OPTIONS, index=weather_idx)
+            # Blank by default — don't invent a reading the angler didn't take.
             air_temp = st.number_input(
-                "Air temp (°)", value=int(float(defaults.get("air_temp") or 70)),
-                step=1, format="%d",
+                "Air temp (°)", value=None, step=1, format="%d",
+                placeholder="optional",
             )
             water_temp = st.number_input(
-                "Water temp (°)", value=int(float(defaults.get("water_temp") or 60)),
-                step=1, format="%d",
+                "Water temp (°)", value=None, step=1, format="%d",
+                placeholder="optional",
             )
 
         # Bait + style: standard options merged with history; type a new one to add it.
@@ -706,7 +767,7 @@ def page_browse():
     st.header("🔍 Browse & Search")
     if msg := st.session_state.pop("saved_msg", None):
         st.success(msg)
-    df = _cached_sessions(db.get_current_user(), *_filter_controls("browse"))
+    df = _cached_sessions(db.get_current_user(), *_filter_controls("browse"), cache_ver=_cache_ver())
     if df.empty:
         st.info("No sessions match these filters.")
         return
@@ -877,15 +938,16 @@ def _edit_form(detail: dict):
                 index=_idx(data_entry.WEATHER_OPTIONS, detail.get("weather")),
                 key=f"e_weather_{sid}",
             )
+            # Keep an existing reading; otherwise blank (don't invent 70/60).
             air_temp = st.number_input(
                 "Air temp (°)",
-                value=int(float(detail["air_temp"])) if detail.get("air_temp") is not None else 70,
-                step=1, format="%d", key=f"e_air_{sid}",
+                value=int(float(detail["air_temp"])) if detail.get("air_temp") is not None else None,
+                step=1, format="%d", key=f"e_air_{sid}", placeholder="optional",
             )
             water_temp = st.number_input(
                 "Water temp (°)",
-                value=int(float(detail["water_temp"])) if detail.get("water_temp") is not None else 60,
-                step=1, format="%d", key=f"e_water_{sid}",
+                value=int(float(detail["water_temp"])) if detail.get("water_temp") is not None else None,
+                step=1, format="%d", key=f"e_water_{sid}", placeholder="optional",
             )
 
         bcol1, bcol2, bcol3, bcol4 = st.columns(4)
@@ -1101,7 +1163,7 @@ def page_map():
         fullscreen = st.checkbox("⛶ Full-screen map", value=False)
 
     filters = _filter_controls("map")
-    df = _cached_map_rows(db.get_current_user(), *filters)
+    df = _cached_map_rows(db.get_current_user(), *filters, cache_ver=_cache_ver())
     if df.empty:
         st.info("No spots match these filters.")
         return
@@ -1127,9 +1189,12 @@ def page_map():
         )
     st_folium(fmap, use_container_width=True, height=map_height, returned_objects=[])
 
-    if st.button("💾 Export standalone map.html"):
-        out = map_view.save_map(df, db.PROJECT_ROOT / "map.html")
-        st.success(f"Saved to {out}")
+    st.download_button(
+        "💾 Download standalone map.html",
+        data=fmap.get_root().render(),
+        file_name="map.html",
+        mime="text/html",
+    )
 
 
 def page_backup():
@@ -1348,7 +1413,10 @@ def main():
         st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
         st.session_state.pop("user_email", None)
-        st.rerun()
+        if _oidc_active() and st.user.is_logged_in:
+            st.logout()  # clears OIDC cookie and redirects
+        else:
+            st.rerun()
 
     if _is_demo():
         st.info(
@@ -1375,11 +1443,31 @@ def main():
         st.sidebar.caption(f"{n_sessions} sessions logged.")
         if not _is_demo():
             with st.sidebar.expander("⚠️ Clear my data"):
-                st.caption("Deletes ALL your sessions and fish records. Cannot be undone.")
-                confirm = st.checkbox("Yes, I'm sure")
-                if st.button("Delete all my data", type="primary", disabled=not confirm):
+                st.caption("Deletes ALL your sessions and fish records. Cannot be undone, "
+                           "and there is no server-side backup — **download your data first.**")
+                # Export-first gate: user must grab a CSV backup before the
+                # delete button unlocks.
+                sessions_csv = _cached_sessions(
+                    db.get_current_user(), None, None, None, None, cache_ver=_cache_ver()
+                ).to_csv(index=False).encode("utf-8")
+                got_backup = st.download_button(
+                    "⬇️ Step 1 — Download my data (CSV)",
+                    data=sessions_csv,
+                    file_name="fishing_log_backup.csv",
+                    mime="text/csv",
+                )
+                if got_backup:
+                    st.session_state["_clear_backup_downloaded"] = True
+                downloaded = st.session_state.get("_clear_backup_downloaded", False)
+                confirm = st.checkbox(
+                    "Step 2 — I've downloaded my backup and want to delete everything",
+                    disabled=not downloaded,
+                )
+                if st.button("Delete all my data", type="primary",
+                             disabled=not (downloaded and confirm)):
                     db.delete_all_sessions()
                     _refresh()
+                    st.session_state.pop("_clear_backup_downloaded", None)
                     st.success("All your data deleted.")
                     st.rerun()
 
