@@ -147,10 +147,23 @@ def _oidc_active() -> bool:
     the whole app crashes on load (as it did on Streamlit Cloud without [auth]).
     """
     try:
-        _ = st.user.is_logged_in
+        _ = _st_user().is_logged_in
         return True
     except Exception:
         return False
+
+
+def _st_user():
+    """The signed-in-user object under either of its names.
+
+    Streamlit 1.42 shipped native auth as st.experimental_user; it was renamed
+    to st.user in 1.44. The deployed app pins 1.42 (layout), local dev runs
+    newer — support both.
+    """
+    try:
+        return st.user
+    except AttributeError:
+        return st.experimental_user
 
 
 def _show_login_page(oidc: bool) -> None:
@@ -230,8 +243,8 @@ def _get_user_email() -> str:
         return DEMO_EMAIL
 
     if _oidc_active():
-        if st.user.is_logged_in:
-            email = st.user.email.lower().strip()
+        if _st_user().is_logged_in:
+            email = _st_user().email.lower().strip()
             # Only approved emails get a real account; others see the demo.
             if not _is_allowed(email):
                 _show_not_approved_page(email)
@@ -1466,7 +1479,7 @@ def main():
         st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
         st.session_state.pop("user_email", None)
-        if _oidc_active() and st.user.is_logged_in:
+        if _oidc_active() and _st_user().is_logged_in:
             st.logout()  # clears OIDC cookie and redirects
         else:
             st.rerun()
