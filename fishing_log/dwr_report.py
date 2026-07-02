@@ -26,9 +26,6 @@ ENTRY = {
 
 SPECIES = "Striper"
 UNIT = '"'  # inch symbol — keeps the sizes list compact in the form field
-# The form collects the responder's email as a normal question; its prefill key
-# is the special "emailAddress" param (not an entry.* id).
-ANGLER_EMAIL = "jcal0064@gmail.com"
 
 
 def _fmt_num(value) -> str:
@@ -69,11 +66,11 @@ def summarize(session: dict) -> dict:
     }
 
 
-def prefilled_url(session: dict, email: str = ANGLER_EMAIL) -> str:
+def prefilled_url(session: dict) -> str:
     """Return a pre-filled Google Form URL for this session's striper report."""
     r = summarize(session)
+    # emailAddress is omitted — Google Form collects it from the signed-in account.
     params = [
-        ("emailAddress", email),
         (f"entry.{ENTRY['anglers']}", r["anglers"]),
         (f"entry.{ENTRY['hours']}", r["hours"]),
         (f"entry.{ENTRY['harvested_n']}", r["harvested_n"]),
