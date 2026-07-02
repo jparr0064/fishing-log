@@ -139,8 +139,18 @@ SESSION_DISPLAY_COLS = {
 
 
 def _oidc_active() -> bool:
-    """True when OIDC auth is configured (st.login/st.user available)."""
-    return hasattr(st.user, "is_logged_in")
+    """True when OIDC auth (st.login/st.user) is configured and usable.
+
+    Accessing st.user.is_logged_in raises unless an [auth] block is configured
+    in secrets, and st.user may not exist on older Streamlit builds. Treat ANY
+    failure as "not active" and fall back to the local email form — otherwise
+    the whole app crashes on load (as it did on Streamlit Cloud without [auth]).
+    """
+    try:
+        _ = st.user.is_logged_in
+        return True
+    except Exception:
+        return False
 
 
 def _show_login_page(oidc: bool) -> None:
