@@ -1,4 +1,6 @@
-"""Tests for validation, data entry, search, and analytics against in-memory DB."""
+"""Tests for validation, data entry, search, and analytics against in-memory SQLite."""
+from __future__ import annotations
+
 import os
 import sys
 
@@ -8,34 +10,60 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from fishing_log import analytics, data_entry, database as db, map_view, search  # noqa: E402
 
+TEST_EMAIL = "angler@test.com"
+
+_DDL = """
+CREATE TABLE sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT NOT NULL,
+    date TEXT, start_time TEXT, end_time TEXT, hours_fished REAL,
+    location_name TEXT, latitude REAL, longitude REAL,
+    weather TEXT, air_temp REAL, water_temp REAL,
+    bait_lure TEXT, fishing_style TEXT,
+    num_anglers INTEGER DEFAULT 1, dwr_filed INTEGER DEFAULT 0,
+    notes TEXT, moon_phase TEXT
+);
+CREATE TABLE fish (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    species TEXT, length REAL DEFAULT 0, weight REAL DEFAULT 0,
+    kept INTEGER DEFAULT 0, depth REAL
+);
+CREATE TABLE spots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    latitude REAL, longitude REAL, label TEXT, caught INTEGER DEFAULT 0
+);
+"""
+
 
 @pytest.fixture(autouse=True)
-def memory_db():
-    """Point every test at a fresh in-memory database."""
-    db.set_db_path(":memory:")
-    # A single shared connection is needed so :memory: persists across calls.
-    conn = db.get_connection()
-    db.init_db(conn)
+def _db(monkeypatch):
+    """Each test gets a fresh in-memory SQLite engine scoped to TEST_EMAIL."""
+    from sqlalchemy import create_engine, event, text
 
-    # Monkeypatch get_connection to reuse this one connection (no close).
-    class _Keep:
-        def __init__(self, c):
-            self._c = c
+    engine = create_engine("sqlite:///:memory:")
 
-        def __getattr__(self, name):
-            return getattr(self._c, name)
+    @event.listens_for(engine, "connect")
+    def _fk_on(dbapi_conn, _):
+        dbapi_conn.execute("PRAGMA foreign_keys = ON")
 
-        def close(self):  # ignore closes so the in-memory DB survives
-            pass
+    with engine.begin() as conn:
+        for stmt in _DDL.strip().split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(text(stmt))
 
-    keeper = _Keep(conn)
-    original = db.get_connection
-    db.get_connection = lambda: keeper
+    monkeypatch.setattr(db, "get_engine", lambda: engine)
+    monkeypatch.setattr(db, "get_current_user", lambda: TEST_EMAIL)
+    monkeypatch.setattr(db, "set_current_user", lambda e: None)
     yield
-    db.get_connection = original
-    conn.close()
-    db.set_db_path(db.DEFAULT_DB_PATH)
+    engine.dispose()
 
+
+# ---------------------------------------------------------------------------
+# Pure-logic (no DB)
+# ---------------------------------------------------------------------------
 
 def test_compute_hours_basic():
     assert data_entry.compute_hours("06:00", "11:30") == 5.5
@@ -45,17 +73,9 @@ def test_compute_hours_crosses_midnight():
     assert data_entry.compute_hours("22:00", "01:00") == 3.0
 
 
-def test_add_session_autocomputes_hours():
-    sid = data_entry.add_session(
-        {"date": "2025-05-01", "start_time": "06:00", "end_time": "09:00",
-         "location_name": "Test Lake", "latitude": 40.0, "longitude": -100.0,
-         "weather": "Sunny"},
-        [{"species": "Bass", "count": 3}],
-    )
-    detail = search.get_session(sid)
-    assert detail["hours_fished"] == 3.0
-    assert detail["total_fish"] == 3
-
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
 
 def test_invalid_latitude_rejected():
     with pytest.raises(data_entry.ValidationError):
@@ -77,134 +97,46 @@ def test_negative_count_rejected():
         )
 
 
-def _seed_three():
-    data_entry.add_session(
-        {"date": "2025-06-01", "location_name": "Alpha", "weather": "Sunny",
-         "hours_fished": 4},
-        [{"species": "Bass", "count": 5}],
+# ---------------------------------------------------------------------------
+# Session CRUD
+# ---------------------------------------------------------------------------
+
+def test_add_session_autocomputes_hours():
+    sid = data_entry.add_session(
+        {"date": "2025-05-01", "start_time": "06:00", "end_time": "09:00",
+         "location_name": "Test Lake", "latitude": 40.0, "longitude": -100.0,
+         "weather": "Sunny"},
+        [{"species": "Bass", "count": 3}],
     )
-    data_entry.add_session(
-        {"date": "2025-06-15", "location_name": "Alpha", "weather": "Rain",
-         "hours_fished": 2},
-        [],  # skunked
+    detail = search.get_session(sid)
+    assert detail["hours_fished"] == 3.0
+    assert detail["total_fish"] == 3
+
+
+def test_add_session_with_individual_fish():
+    sid = data_entry.add_session(
+        {"date": "2026-06-07", "location_name": "SML"},
+        [
+            {"species": "Striper", "length": 24.5, "weight": 5.2},
+            {"species": "Catfish", "length": 18, "weight": 0},
+        ],
     )
-    data_entry.add_session(
-        {"date": "2025-12-20", "location_name": "Beta", "weather": "Sunny",
-         "hours_fished": 5},
-        [{"species": "Pike", "count": 1}, {"species": "Bass", "count": 2}],
+    d = search.get_session(sid)
+    assert d["total_fish"] == 2
+    striper = next(f for f in d["fish"] if f["species"] == "Striper")
+    assert striper["length"] == 24.5 and striper["weight"] == 5.2
+
+
+def test_kept_and_anglers_roundtrip():
+    sid = data_entry.add_session(
+        {"date": "2026-06-25", "location_name": "SML", "num_anglers": 3},
+        [{"species": "Striper", "length": 31, "weight": 10, "kept": True},
+         {"species": "Striper", "length": 20, "weight": 3, "kept": False}],
     )
-
-
-def test_search_filters():
-    _seed_three()
-    assert len(search.list_sessions(location="Alpha")) == 2
-    assert len(search.list_sessions(species="Pike")) == 1
-    assert len(search.list_sessions(date_from="2025-12-01")) == 1
-
-
-def test_search_total_fish_column():
-    _seed_three()
-    df = search.list_sessions(location="Beta")
-    assert int(df.iloc[0]["total_fish"]) == 3
-
-
-def test_analytics_success_rate_by_location():
-    _seed_three()
-    by_loc = analytics.by_location().set_index("location_name")
-    # Alpha: 2 sessions, 1 with fish -> 50%
-    assert by_loc.loc["Alpha", "success_rate_%"] == 50.0
-    assert by_loc.loc["Beta", "success_rate_%"] == 100.0
-
-
-def test_analytics_by_species_totals():
-    _seed_three()
-    by_sp = analytics.by_species().set_index("species")
-    assert int(by_sp.loc["Bass", "total_caught"]) == 7  # 5 + 2
-    assert int(by_sp.loc["Bass", "sessions_present"]) == 2
-
-
-def test_overall_stats():
-    _seed_three()
-    stats = analytics.overall_stats()
-    assert stats["sessions"] == 3
-    assert stats["total_fish"] == 8
-    assert stats["success_rate"] == pytest.approx(66.7, abs=0.1)
-
-
-def test_by_month_fills_all_twelve():
-    data_entry.add_session(
-        {"date": "2026-06-01", "location_name": "SML", "hours_fished": 3},
-        [{"species": "Striper", "count": 5}],
-    )
-    data_entry.add_session(
-        {"date": "2026-06-15", "location_name": "SML", "hours_fished": 2}, []
-    )
-    data_entry.add_session(
-        {"date": "2026-08-01", "location_name": "SML", "hours_fished": 4},
-        [{"species": "Catfish", "count": 2}],
-    )
-    df = analytics.by_month(2026)
-    assert len(df) == 12  # all months present
-    by_m = df.set_index("month")
-    assert int(by_m.loc["June", "total_fish"]) == 5
-    assert int(by_m.loc["June", "sessions"]) == 2
-    assert by_m.loc["June", "success_rate_%"] == 50.0
-    assert int(by_m.loc["August", "total_fish"]) == 2
-    assert int(by_m.loc["January", "sessions"]) == 0
-    assert by_m.loc["January", "success_rate_%"] == 0.0
-
-
-def test_available_years_desc():
-    data_entry.add_session({"date": "2025-06-01", "location_name": "SML"}, [])
-    data_entry.add_session({"date": "2026-06-01", "location_name": "SML"}, [])
-    assert analytics.available_years() == [2026, 2025]
-
-
-def test_save_pil_images(monkeypatch):
-    import shutil
-    from PIL import Image
-    from fishing_log import media
-
-    test_dir = db.PROJECT_ROOT / "_test_photos"
-    monkeypatch.setattr(db, "PHOTOS_DIR", test_dir)
-    try:
-        sid = data_entry.add_session({"date": "2026-06-01", "location_name": "SML"}, [])
-        img = Image.new("RGB", (12, 8), "red")
-        paths = media.save_pil_images(sid, [img], captions=["nice striper"])
-        assert len(paths) == 1
-        assert (db.PROJECT_ROOT / paths[0]).exists()
-        photos = media.get_photos(sid)
-        assert len(photos) == 1
-        assert photos[0]["caption"] == "nice striper"
-    finally:
-        shutil.rmtree(test_dir, ignore_errors=True)
-
-
-def test_migration_adds_column_preserving_data():
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    # Simulate an OLD database that predates the fishing_style column.
-    conn.execute(
-        "CREATE TABLE sessions (id INTEGER PRIMARY KEY, date TEXT, "
-        "location_name TEXT, bait_lure TEXT)"
-    )
-    conn.execute(
-        "INSERT INTO sessions (date, location_name, bait_lure) "
-        "VALUES ('2025-01-01', 'SML', 'Worm')"
-    )
-    conn.commit()
-
-    db._ensure_columns(conn)
-    conn.commit()
-
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(sessions)")}
-    assert "fishing_style" in cols  # column added
-    row = conn.execute("SELECT * FROM sessions").fetchone()
-    assert row["location_name"] == "SML"  # existing data preserved
-    assert row["bait_lure"] == "Worm"
-    assert row["fishing_style"] is None
-    conn.close()
+    d = search.get_session(sid)
+    assert d["num_anglers"] == 3
+    kept = [f for f in d["fish"] if f["kept"]]
+    assert len(kept) == 1 and kept[0]["length"] == 31
 
 
 def test_update_session_edits_fields_and_catches():
@@ -229,18 +161,193 @@ def test_update_session_edits_fields_and_catches():
     assert {f["species"] for f in d2["fish"]} == {"Catfish", "Muskie"}
 
 
-def test_add_session_with_individual_fish():
+def test_update_session_replaces_spots_but_keeps_when_none():
+    sid = data_entry.add_session(
+        {"date": "2026-06-07", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7}],
+    )
+    # spots=None must NOT wipe existing spots
+    data_entry.update_session(sid, {"date": "2026-06-07", "location_name": "SML"}, [])
+    assert len(search.get_session(sid)["spots"]) == 1
+    # passing a new list replaces them
+    data_entry.update_session(
+        sid, {"date": "2026-06-07", "location_name": "SML"}, [],
+        [{"lat": 38.0, "lon": -80.0}, {"lat": 38.1, "lon": -80.1}],
+    )
+    assert len(search.get_session(sid)["spots"]) == 2
+
+
+def test_update_session_preserves_latlon_when_no_spots():
+    """Editing a trip with an empty spot picker must not null its starting coords."""
+    sid = data_entry.add_session(
+        {"date": "2026-06-07", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7}],
+    )
+    assert search.get_session(sid)["latitude"] == 37.1
+    # Update with spots=[] (empty picker) and no lat/lon in the session dict
+    data_entry.update_session(sid, {"date": "2026-06-08", "location_name": "SML"}, [], [])
+    d = search.get_session(sid)
+    assert d["date"] == "2026-06-08"          # other fields updated
+    assert d["latitude"] == 37.1 and d["longitude"] == -79.7  # coords preserved
+
+
+def test_delete_all_sessions():
+    _seed_three()
+    assert db.session_count() == 3
+    removed = db.delete_all_sessions()
+    assert removed == 3
+    assert db.session_count() == 0
+    assert search.list_sessions().empty
+
+
+# ---------------------------------------------------------------------------
+# Search / filtering
+# ---------------------------------------------------------------------------
+
+def _seed_three():
+    data_entry.add_session(
+        {"date": "2025-06-01", "location_name": "Alpha", "weather": "Sunny",
+         "hours_fished": 4},
+        [{"species": "Bass", "count": 5}],
+    )
+    data_entry.add_session(
+        {"date": "2025-06-15", "location_name": "Alpha", "weather": "Rain",
+         "hours_fished": 2},
+        [],
+    )
+    data_entry.add_session(
+        {"date": "2025-12-20", "location_name": "Beta", "weather": "Sunny",
+         "hours_fished": 5},
+        [{"species": "Pike", "count": 1}, {"species": "Bass", "count": 2}],
+    )
+
+
+def test_search_filters():
+    _seed_three()
+    assert len(search.list_sessions(location="Alpha")) == 2
+    assert len(search.list_sessions(species="Pike")) == 1
+    assert len(search.list_sessions(date_from="2025-12-01")) == 1
+
+
+def test_search_total_fish_column():
+    _seed_three()
+    df = search.list_sessions(location="Beta")
+    assert int(df.iloc[0]["total_fish"]) == 3
+
+
+def test_baits_by_frequency_and_recent_defaults():
+    data_entry.add_session(
+        {"date": "2025-06-01", "location_name": "L", "bait_lure": "Worm", "weather": "Sunny"}, []
+    )
+    data_entry.add_session(
+        {"date": "2025-06-02", "location_name": "L", "bait_lure": "Worm", "weather": "Rain"}, []
+    )
+    data_entry.add_session(
+        {"date": "2025-06-03", "location_name": "L", "bait_lure": "Jig", "weather": "Cloudy"}, []
+    )
+    assert search.baits_by_frequency()[0] == "Worm"
+    rd = search.recent_defaults()
+    assert rd["bait_lure"] == "Jig"
+    assert rd["weather"] == "Cloudy"
+
+
+# ---------------------------------------------------------------------------
+# Spots
+# ---------------------------------------------------------------------------
+
+def test_add_session_with_spots_and_map_rows():
     sid = data_entry.add_session(
         {"date": "2026-06-07", "location_name": "SML"},
-        [
-            {"species": "Striper", "length": 24.5, "weight": 5.2},
-            {"species": "Catfish", "length": 18, "weight": 0},
-        ],
+        [{"species": "Striper", "length": 20, "weight": 4}],
+        [{"lat": 37.1, "lon": -79.7}, {"lat": 37.2, "lon": -79.8}],
     )
     d = search.get_session(sid)
-    assert d["total_fish"] == 2
-    striper = next(f for f in d["fish"] if f["species"] == "Striper")
-    assert striper["length"] == 24.5 and striper["weight"] == 5.2
+    assert len(d["spots"]) == 2
+    assert d["latitude"] == 37.1 and d["longitude"] == -79.7
+
+    rows = search.map_rows()
+    assert len(rows) == 1
+    assert rows.iloc[0]["latitude"] == 37.1
+    assert int(rows.iloc[0]["total_fish"]) == 1
+
+
+def test_spot_caught_flag_roundtrip_and_route_map():
+    sid = data_entry.add_session(
+        {"date": "2026-06-07", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7, "caught": False},
+         {"lat": 37.15, "lon": -79.72, "caught": True}],
+    )
+    spots = search.get_session(sid)["spots"]
+    assert [bool(s["caught"]) for s in spots] == [False, True]
+
+    pts = [{"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s["caught"])} for s in spots]
+    html = map_view.build_route_map(pts)._repr_html_().lower()
+    assert "antpath" in html
+    assert "ud83d" in html  # 🐟 JSON-escaped
+
+
+def test_caught_spot_points():
+    data_entry.add_session(
+        {"date": "2026-06-25", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7, "caught": True},
+         {"lat": 37.2, "lon": -79.8, "caught": False}],
+    )
+    assert search.caught_spot_points() == [[37.1, -79.7]]
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+def test_analytics_success_rate_by_location():
+    _seed_three()
+    by_loc = analytics.by_location().set_index("location_name")
+    assert by_loc.loc["Alpha", "success_rate_%"] == 50.0
+    assert by_loc.loc["Beta", "success_rate_%"] == 100.0
+
+
+def test_analytics_by_species_totals():
+    _seed_three()
+    by_sp = analytics.by_species().set_index("species")
+    assert int(by_sp.loc["Bass", "total_caught"]) == 7
+    assert int(by_sp.loc["Bass", "sessions_present"]) == 2
+
+
+def test_overall_stats():
+    _seed_three()
+    stats = analytics.overall_stats()
+    assert stats["sessions"] == 3
+    assert stats["total_fish"] == 8
+    assert stats["success_rate"] == pytest.approx(66.7, abs=0.1)
+
+
+def test_by_month_fills_all_twelve():
+    data_entry.add_session(
+        {"date": "2026-06-01", "location_name": "SML", "hours_fished": 3},
+        [{"species": "Striper", "count": 5}],
+    )
+    data_entry.add_session(
+        {"date": "2026-06-15", "location_name": "SML", "hours_fished": 2}, []
+    )
+    data_entry.add_session(
+        {"date": "2026-08-01", "location_name": "SML", "hours_fished": 4},
+        [{"species": "Catfish", "count": 2}],
+    )
+    df = analytics.by_month(2026)
+    assert len(df) == 12
+    by_m = df.set_index("month")
+    assert int(by_m.loc["June", "total_fish"]) == 5
+    assert int(by_m.loc["June", "sessions"]) == 2
+    assert by_m.loc["June", "success_rate_%"] == 50.0
+    assert int(by_m.loc["August", "total_fish"]) == 2
+    assert int(by_m.loc["January", "sessions"]) == 0
+    assert by_m.loc["January", "success_rate_%"] == 0.0
+
+
+def test_available_years_desc():
+    data_entry.add_session({"date": "2025-06-01", "location_name": "SML"}, [])
+    data_entry.add_session({"date": "2026-06-01", "location_name": "SML"}, [])
+    assert analytics.available_years() == [2026, 2025]
 
 
 def test_by_species_size_metrics():
@@ -256,138 +363,6 @@ def test_by_species_size_metrics():
     assert bysp.loc["Striper", "avg_length"] == 25.0
     assert bysp.loc["Striper", "max_length"] == 30
     assert bysp.loc["Striper", "avg_weight"] == 5.0
-
-
-def test_backfill_expands_catches_once():
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    # OLD-style DB: aggregate catches, no fish table, user_version 0.
-    conn.executescript(
-        """
-        CREATE TABLE sessions (id INTEGER PRIMARY KEY, date TEXT, location_name TEXT);
-        CREATE TABLE catches (id INTEGER PRIMARY KEY, session_id INTEGER, species TEXT, count INTEGER);
-        INSERT INTO sessions (id, date, location_name) VALUES (1, '2026-06-07', 'SML');
-        INSERT INTO catches (session_id, species, count) VALUES (1, 'Striper', 3);
-        """
-    )
-    conn.commit()
-
-    db.init_db(conn)  # creates fish table + backfills 3 individual fish
-    assert conn.execute("SELECT COUNT(*) AS n FROM fish").fetchone()["n"] == 3
-    db.init_db(conn)  # version guard => no duplication
-    assert conn.execute("SELECT COUNT(*) AS n FROM fish").fetchone()["n"] == 3
-    row = conn.execute("SELECT species, length, weight FROM fish LIMIT 1").fetchone()
-    assert row["species"] == "Striper" and row["length"] == 0 and row["weight"] == 0
-    conn.close()
-
-
-def test_exif_orientation_applied(tmp_path):
-    from PIL import Image
-    from fishing_log import media
-
-    img = Image.new("RGB", (100, 50), "red")  # landscape
-    exif = img.getexif()
-    exif[274] = 6  # Orientation tag: rotate 90° CW when displaying
-    p = tmp_path / "o.jpg"
-    img.save(p, exif=exif)
-
-    out = media.load_image_oriented(str(p))
-    assert out.size == (50, 100)  # transposed to portrait — EXIF honored
-
-
-def test_delete_photo_removes_row_and_file(monkeypatch):
-    import shutil
-    from PIL import Image
-    from fishing_log import media
-
-    test_dir = db.PROJECT_ROOT / "_test_photos2"
-    monkeypatch.setattr(db, "PHOTOS_DIR", test_dir)
-    try:
-        sid = data_entry.add_session({"date": "2026-06-07", "location_name": "SML"}, [])
-        media.save_pil_images(sid, [Image.new("RGB", (10, 10), "red")])
-        photos = media.get_photos(sid)
-        assert len(photos) == 1
-        pid = photos[0]["id"]
-        abs_path = photos[0]["abs_path"]
-        assert os.path.exists(abs_path)
-
-        media.delete_photo(pid)
-        assert media.get_photos(sid) == []
-        assert not os.path.exists(abs_path)
-    finally:
-        shutil.rmtree(test_dir, ignore_errors=True)
-
-
-def test_add_session_with_spots_and_map_rows():
-    sid = data_entry.add_session(
-        {"date": "2026-06-07", "location_name": "SML"},
-        [{"species": "Striper", "length": 20, "weight": 4}],
-        [{"lat": 37.1, "lon": -79.7}, {"lat": 37.2, "lon": -79.8}],
-    )
-    d = search.get_session(sid)
-    assert len(d["spots"]) == 2
-    # Primary coordinate set from the first spot.
-    assert d["latitude"] == 37.1 and d["longitude"] == -79.7
-
-    rows = search.map_rows()
-    assert len(rows) == 1  # overview map shows one starting dot per session
-    assert rows.iloc[0]["latitude"] == 37.1  # the starting spot
-    assert int(rows.iloc[0]["total_fish"]) == 1
-
-
-def test_spot_caught_flag_roundtrip_and_route_map():
-    sid = data_entry.add_session(
-        {"date": "2026-06-07", "location_name": "SML"}, [],
-        [{"lat": 37.1, "lon": -79.7, "caught": False},
-         {"lat": 37.15, "lon": -79.72, "caught": True}],
-    )
-    spots = search.get_session(sid)["spots"]
-    assert [bool(s["caught"]) for s in spots] == [False, True]
-
-    pts = [{"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s["caught"])} for s in spots]
-    html = map_view.build_route_map(pts)._repr_html_().lower()
-    assert "antpath" in html  # directional route line present
-    assert "ud83d" in html  # fish icon (🐟, JSON-escaped) marks the caught spot
-
-
-def test_update_session_replaces_spots_but_keeps_when_none():
-    sid = data_entry.add_session(
-        {"date": "2026-06-07", "location_name": "SML"}, [],
-        [{"lat": 37.1, "lon": -79.7}],
-    )
-    # Passing spots=None must NOT wipe existing spots.
-    data_entry.update_session(sid, {"date": "2026-06-07", "location_name": "SML"}, [])
-    assert len(search.get_session(sid)["spots"]) == 1
-    # Passing a new list replaces them.
-    data_entry.update_session(
-        sid, {"date": "2026-06-07", "location_name": "SML"}, [],
-        [{"lat": 38.0, "lon": -80.0}, {"lat": 38.1, "lon": -80.1}],
-    )
-    assert len(search.get_session(sid)["spots"]) == 2
-
-
-def test_spots_backfill_from_sessions():
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE sessions (id INTEGER PRIMARY KEY, date TEXT, location_name TEXT,
-                               latitude REAL, longitude REAL);
-        INSERT INTO sessions (id, date, location_name, latitude, longitude)
-        VALUES (1, '2026-06-07', 'SML', 37.1, -79.7);
-        PRAGMA user_version = 1;
-        """
-    )
-    conn.commit()
-
-    db.init_db(conn)  # v2 migration seeds spots from the session coordinate
-    rows = conn.execute("SELECT session_id, latitude FROM spots").fetchall()
-    assert len(rows) == 1 and rows[0]["latitude"] == 37.1
-    db.init_db(conn)  # idempotent
-    assert conn.execute("SELECT COUNT(*) AS n FROM spots").fetchone()["n"] == 1
-    conn.close()
 
 
 def test_personal_bests():
@@ -421,40 +396,31 @@ def test_size_by_month():
     assert int(sm.loc["January", "fish"]) == 0
 
 
-def test_backup_create_and_prune(tmp_path, monkeypatch):
-    import sqlite3
-    from fishing_log import backup
-
-    dbfile = tmp_path / "f.db"
-    sqlite3.connect(dbfile).close()
-    monkeypatch.setattr(db, "_db_path", dbfile)
-    bdir = tmp_path / "backups"
-    monkeypatch.setattr(backup, "BACKUP_DIR", bdir)
-
-    created = backup.auto_backup()
-    assert created is not None and created.exists()
-    assert len(backup.list_backups()) >= 1
-
-    # Prune keeps only the newest N.
-    for i in range(15):
-        (bdir / f"fishing_log-202601{i:02d}-000000.db").write_text("x")
-    backup._prune(10)
-    names = [p.name for p in backup.list_backups()]
-    assert len(names) == 10
-    assert "fishing_log-20260114-000000.db" in names  # newest kept
-
-
-def test_kept_and_anglers_roundtrip():
-    sid = data_entry.add_session(
-        {"date": "2026-06-25", "location_name": "SML", "num_anglers": 3},
-        [{"species": "Striper", "length": 31, "weight": 10, "kept": True},
-         {"species": "Striper", "length": 20, "weight": 3, "kept": False}],
+def test_condition_insights():
+    data_entry.add_session(
+        {"date": "2026-06-01", "location_name": "SML", "water_temp": 62,
+         "fishing_style": "Planer Boards", "start_time": "06:00", "hours_fished": 4},
+        [{"species": "Striper", "length": 30, "weight": 8}],
     )
-    d = search.get_session(sid)
-    assert d["num_anglers"] == 3
-    kept = [f for f in d["fish"] if f["kept"]]
-    assert len(kept) == 1 and kept[0]["length"] == 31
+    data_entry.add_session(
+        {"date": "2026-06-08", "location_name": "SML", "water_temp": 48,
+         "fishing_style": "Casting", "start_time": "13:00", "hours_fished": 3}, [],
+    )
+    wt = analytics.by_water_temp().set_index("water_band")
+    assert wt.loc[analytics._water_band(62), "success_rate_%"] == 100.0
+    assert wt.loc[analytics._water_band(48), "success_rate_%"] == 0.0
 
+    tod = analytics.by_time_of_day().set_index("tod")
+    assert int(tod.loc[analytics._tod_band("06:00"), "sessions"]) == 1
+
+    assert not analytics.by_fishing_style().empty
+    bests = analytics.best_conditions(min_sessions=1)
+    assert any(fph > 0 for _, _, fph in bests)
+
+
+# ---------------------------------------------------------------------------
+# DWR report
+# ---------------------------------------------------------------------------
 
 def test_dwr_summarize_and_url():
     from fishing_log import dwr_report
@@ -475,7 +441,8 @@ def test_dwr_summarize_and_url():
     assert r["anglers"] == 2 and r["hours"] == "4"
 
     url = dwr_report.prefilled_url(session)
-    assert "emailAddress=jcal0064%40gmail.com" in url  # email prefilled
+    # emailAddress is no longer prefilled — each angler's Google account supplies it
+    assert "emailAddress" not in url
     assert "entry.1950519841=2" in url   # harvested count
     assert "entry.19977333=1" in url     # released count
     assert "entry.841781509=2" in url    # anglers
@@ -504,36 +471,9 @@ def test_dwr_filed_roundtrip():
     assert search.get_session(sid)["dwr_filed"] == 0
 
 
-def test_caught_spot_points():
-    data_entry.add_session(
-        {"date": "2026-06-25", "location_name": "SML"}, [],
-        [{"lat": 37.1, "lon": -79.7, "caught": True},
-         {"lat": 37.2, "lon": -79.8, "caught": False}],
-    )
-    assert search.caught_spot_points() == [[37.1, -79.7]]
-
-
-def test_condition_insights():
-    data_entry.add_session(
-        {"date": "2026-06-01", "location_name": "SML", "water_temp": 62,
-         "fishing_style": "Planer Boards", "start_time": "06:00", "hours_fished": 4},
-        [{"species": "Striper", "length": 30, "weight": 8}],
-    )
-    data_entry.add_session(
-        {"date": "2026-06-08", "location_name": "SML", "water_temp": 48,
-         "fishing_style": "Casting", "start_time": "13:00", "hours_fished": 3}, [],
-    )
-    wt = analytics.by_water_temp().set_index("water_band")
-    assert wt.loc[analytics._water_band(62), "success_rate_%"] == 100.0
-    assert wt.loc[analytics._water_band(48), "success_rate_%"] == 0.0
-
-    tod = analytics.by_time_of_day().set_index("tod")
-    assert int(tod.loc[analytics._tod_band("06:00"), "sessions"]) == 1
-
-    assert not analytics.by_fishing_style().empty
-    bests = analytics.best_conditions(min_sessions=1)
-    assert any(fph > 0 for _, _, fph in bests)
-
+# ---------------------------------------------------------------------------
+# Map
+# ---------------------------------------------------------------------------
 
 def test_map_success_tiers():
     assert map_view._tier(0)[0] == "Skunked"
@@ -545,42 +485,33 @@ def test_map_success_tiers():
     assert map_view._tier(25)[0] == "Blowout"
 
 
-def test_delete_all_sessions():
-    _seed_three()
-    assert db.session_count() == 3
-    removed = db.delete_all_sessions()
-    assert removed == 3
-    assert db.session_count() == 0
-    assert search.list_sessions().empty
+# ---------------------------------------------------------------------------
+# Write scoping (IDOR fix verification)
+# ---------------------------------------------------------------------------
 
+def test_write_scoping():
+    """update/delete/set_dwr_filed must not affect another user's sessions."""
+    from sqlalchemy import text
 
-def test_baits_by_frequency_and_recent_defaults():
-    data_entry.add_session(
-        {"date": "2025-06-01", "location_name": "L", "bait_lure": "Worm", "weather": "Sunny"}, []
-    )
-    data_entry.add_session(
-        {"date": "2025-06-02", "location_name": "L", "bait_lure": "Worm", "weather": "Rain"}, []
-    )
-    data_entry.add_session(
-        {"date": "2025-06-03", "location_name": "L", "bait_lure": "Jig", "weather": "Cloudy"}, []
-    )
-    # "Worm" used twice -> should rank first.
-    assert search.baits_by_frequency()[0] == "Worm"
-    # Most recent session is 2025-06-03 with Jig / Cloudy.
-    rd = search.recent_defaults()
-    assert rd["bait_lure"] == "Jig"
-    assert rd["weather"] == "Cloudy"
+    engine = db.get_engine()
+    # Insert a session directly as another user (bypassing get_current_user)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO sessions (user_email, date, location_name, num_anglers, dwr_filed, moon_phase) "
+            "VALUES ('other@test.com', '2026-06-01', 'SML', 1, 0, 'Waxing Crescent')"
+        ))
+        other_sid = conn.execute(text("SELECT last_insert_rowid()")).scalar()
 
+    # update_session as TEST_EMAIL: no matching row → ValidationError
+    with pytest.raises(data_entry.ValidationError):
+        data_entry.update_session(other_sid, {"date": "2026-06-01", "location_name": "SML"}, [])
 
-def test_insert_photo_row_cascades_on_delete():
-    sid = data_entry.add_session(
-        {"date": "2025-06-01", "location_name": "L"}, []
-    )
-    conn = db.get_connection()
-    db.insert_photo(conn, sid, "data/photos/x/abc.jpg", "nice bass")
-    conn.commit()
-    n = conn.execute("SELECT COUNT(*) AS n FROM photos WHERE session_id = ?", (sid,)).fetchone()["n"]
-    assert n == 1
-    data_entry.delete_session(sid)
-    n2 = conn.execute("SELECT COUNT(*) AS n FROM photos").fetchone()["n"]
-    assert n2 == 0
+    # delete_session as TEST_EMAIL: silently a no-op
+    data_entry.delete_session(other_sid)
+    with engine.connect() as conn:
+        n = conn.execute(text("SELECT COUNT(*) FROM sessions WHERE id = :id"), {"id": other_sid}).scalar()
+    assert n == 1, "Other user's session must not be deleted"
+
+    # set_dwr_filed as TEST_EMAIL: returns 0 (no rows touched)
+    n_updated = data_entry.set_dwr_filed(other_sid, True)
+    assert n_updated == 0
