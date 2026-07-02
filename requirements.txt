@@ -7,4 +7,6 @@ streamlit-geolocation>=0.0.10
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 altair>=5.0
-Authlib>=1.3.2
+# Pinned: Authlib 1.6.6 breaks streamlit auth ("400: 'NoneType' object does not
+# support item assignment" on /oauth2callback) — see streamlit/streamlit#13461.
+Authlib==1.6.5
