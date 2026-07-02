@@ -258,9 +258,9 @@ def by_species() -> pd.DataFrame:
             f.species,
             COUNT(*) AS total_caught,
             COUNT(DISTINCT f.session_id) AS sessions_present,
-            ROUND(AVG(NULLIF(f.length, 0))::numeric, 2) AS avg_length,
+            ROUND(AVG(NULLIF(f.length, 0)), 2) AS avg_length,
             MAX(f.length) AS max_length,
-            ROUND(AVG(NULLIF(f.weight, 0))::numeric, 2) AS avg_weight,
+            ROUND(AVG(NULLIF(f.weight, 0)), 2) AS avg_weight,
             MAX(f.weight) AS max_weight
         FROM fish f JOIN sessions s ON s.id = f.session_id
         WHERE s.user_email = :email

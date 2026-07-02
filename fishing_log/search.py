@@ -8,13 +8,37 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from . import database as db
 
 
 def _user() -> str:
     return db.get_current_user()
+
+
+def _like(col: str, param: str) -> str:
+    """Case-insensitive LIKE that works on both Postgres and SQLite."""
+    return f"LOWER({col}) LIKE LOWER(:{param})"
+
+
+def _species_list_map(engine, session_ids: list) -> dict:
+    """Return {session_id: 'Bass (3), Striper (1)'} for the given session IDs."""
+    if not session_ids:
+        return {}
+    q = text(
+        "SELECT session_id, species, COUNT(*) AS cnt "
+        "FROM fish WHERE session_id IN :sids "
+        "GROUP BY session_id, species ORDER BY species"
+    ).bindparams(bindparam("sids", expanding=True))
+    with engine.connect() as conn:
+        rows = conn.execute(q, {"sids": session_ids}).mappings().all()
+    result: dict = {}
+    for r in rows:
+        sid = int(r["session_id"])
+        entry = f"{r['species']} ({int(r['cnt'])})"
+        result[sid] = f"{result[sid]}, {entry}" if sid in result else entry
+    return result
 
 
 def list_sessions(
@@ -33,10 +57,10 @@ def list_sessions(
         where.append("s.date <= :date_to")
         params["date_to"] = str(date_to)
     if location:
-        where.append("s.location_name ILIKE :location")
+        where.append(_like("s.location_name", "location"))
         params["location"] = f"%{location}%"
     if species:
-        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        where.append(f"s.id IN (SELECT session_id FROM fish WHERE {_like('species', 'species')})")
         params["species"] = f"%{species}%"
 
     where_sql = "WHERE " + " AND ".join(where)
@@ -48,22 +72,19 @@ def list_sessions(
             s.air_temp, s.water_temp, s.bait_lure, s.fishing_style,
             s.num_anglers, s.dwr_filed, s.notes,
             (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish,
-            (SELECT MAX(length) FROM fish WHERE session_id = s.id) AS biggest_length,
-            COALESCE((
-                SELECT STRING_AGG(sp || ' (' || c::text || ')', ', ' ORDER BY sp)
-                FROM (
-                    SELECT species AS sp, COUNT(*) AS c
-                    FROM fish WHERE session_id = s.id
-                    GROUP BY species
-                ) sub
-            ), '') AS species_list
+            (SELECT MAX(length) FROM fish WHERE session_id = s.id) AS biggest_length
         FROM sessions s
         {where_sql}
-        ORDER BY s.date DESC, s.start_time DESC
+        ORDER BY s.date DESC, (s.start_time IS NULL), s.start_time DESC
     """)
 
-    with db.get_engine().connect() as conn:
-        return pd.read_sql_query(query, conn, params=params)
+    engine = db.get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql_query(query, conn, params=params)
+
+    sl_map = _species_list_map(engine, df["id"].tolist() if not df.empty else [])
+    df["species_list"] = df["id"].map(sl_map).fillna("") if not df.empty else ""
+    return df
 
 
 def get_session(session_id: int) -> Optional[dict]:
@@ -117,10 +138,10 @@ def map_rows(
         where.append("s.date <= :date_to")
         params["date_to"] = str(date_to)
     if location:
-        where.append("s.location_name ILIKE :location")
+        where.append(_like("s.location_name", "location"))
         params["location"] = f"%{location}%"
     if species:
-        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        where.append(f"s.id IN (SELECT session_id FROM fish WHERE {_like('species', 'species')})")
         params["species"] = f"%{species}%"
 
     query = text(f"""
@@ -128,21 +149,19 @@ def map_rows(
             s.latitude, s.longitude, s.id, s.date, s.start_time, s.end_time,
             s.location_name, s.weather, s.air_temp, s.water_temp,
             s.bait_lure, s.fishing_style,
-            (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish,
-            COALESCE((
-                SELECT STRING_AGG(sp || ' (' || c::text || ')', ', ' ORDER BY sp)
-                FROM (
-                    SELECT species AS sp, COUNT(*) AS c
-                    FROM fish WHERE session_id = s.id GROUP BY species
-                ) sub
-            ), '') AS species_list
+            (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish
         FROM sessions s
         WHERE {' AND '.join(where)}
         ORDER BY s.date DESC
     """)
 
-    with db.get_engine().connect() as conn:
-        return pd.read_sql_query(query, conn, params=params)
+    engine = db.get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql_query(query, conn, params=params)
+
+    sl_map = _species_list_map(engine, df["id"].tolist() if not df.empty else [])
+    df["species_list"] = df["id"].map(sl_map).fillna("") if not df.empty else ""
+    return df
 
 
 def caught_spot_points(
@@ -162,10 +181,10 @@ def caught_spot_points(
         where.append("s.date <= :date_to")
         params["date_to"] = str(date_to)
     if location:
-        where.append("s.location_name ILIKE :location")
+        where.append(_like("s.location_name", "location"))
         params["location"] = f"%{location}%"
     if species:
-        where.append("s.id IN (SELECT session_id FROM fish WHERE species ILIKE :species)")
+        where.append(f"s.id IN (SELECT session_id FROM fish WHERE {_like('species', 'species')})")
         params["species"] = f"%{species}%"
 
     query = text(f"""
@@ -180,28 +199,26 @@ def caught_spot_points(
 
 
 def calendar_month(year: int, month: int) -> dict:
-    """Return {day_of_month: [{session_id, total_fish, location, moon_phase}, ...]} for the calendar.
-
-    Each day maps to a list so multiple sessions on the same day are preserved.
-    """
+    """Return {day_of_month: [{session_id, total_fish, location, moon_phase}, ...]} for the calendar."""
     import calendar as _cal
     last_day = _cal.monthrange(year, month)[1]
     date_from = f"{year}-{month:02d}-01"
     date_to   = f"{year}-{month:02d}-{last_day:02d}"
     query = text("""
         SELECT
-            s.id                                 AS session_id,
-            EXTRACT(DAY FROM s.date::date)::int  AS day,
-            COUNT(f.id)                          AS total_fish,
+            s.id                AS session_id,
+            s.date,
+            COUNT(f.id)         AS total_fish,
             s.location_name,
-            s.moon_phase
+            s.moon_phase,
+            s.start_time
         FROM sessions s
         LEFT JOIN fish f ON f.session_id = s.id
         WHERE s.user_email = :email
           AND s.date >= :date_from
           AND s.date <= :date_to
-        GROUP BY s.id, EXTRACT(DAY FROM s.date::date)::int
-        ORDER BY day, s.start_time
+        GROUP BY s.id, s.date, s.location_name, s.moon_phase, s.start_time
+        ORDER BY s.date, s.start_time
     """)
     with db.get_engine().connect() as conn:
         rows = conn.execute(query, {
@@ -209,8 +226,9 @@ def calendar_month(year: int, month: int) -> dict:
         }).mappings().all()
     result: dict = {}
     for r in rows:
-        d = int(r["day"])
-        result.setdefault(d, []).append({
+        date_str = str(r["date"])[:10]
+        day = int(date_str.split("-")[2])
+        result.setdefault(day, []).append({
             "session_id": int(r["session_id"]),
             "total_fish": int(r["total_fish"]),
             "location":   (r["location_name"] or "")[:22],
