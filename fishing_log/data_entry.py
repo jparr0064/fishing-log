@@ -211,17 +211,25 @@ def update_session(
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
     cleaned_spots = validate_spots(spots or [])
+
+    # Spots drive the starting coordinate. Only touch lat/lon when spots are
+    # present; if none were provided, leave the existing coords intact rather
+    # than nulling them (editing a trip with an empty picker must not wipe them).
+    fields = list(db.SESSION_FIELDS)
     if cleaned_spots:
         cleaned["latitude"] = cleaned_spots[0]["lat"]
         cleaned["longitude"] = cleaned_spots[0]["lon"]
+    elif cleaned.get("latitude") is None and cleaned.get("longitude") is None:
+        fields = [f for f in fields if f not in ("latitude", "longitude")]
 
-    assignments = ", ".join(f"{f} = :{f}" for f in db.SESSION_FIELDS)
-    params = {f: cleaned.get(f) for f in db.SESSION_FIELDS}
+    assignments = ", ".join(f"{f} = :{f}" for f in fields)
+    params = {f: cleaned.get(f) for f in fields}
     params["id"] = session_id
+    params["email"] = db.get_current_user()
 
     with db.get_engine().begin() as conn:
         result = conn.execute(
-            text(f"UPDATE sessions SET {assignments} WHERE id = :id"),
+            text(f"UPDATE sessions SET {assignments} WHERE id = :id AND user_email = :email"),
             params,
         )
         if result.rowcount == 0:
@@ -238,14 +246,13 @@ def update_session(
 def set_dwr_filed(session_id: int, filed: bool) -> int:
     """Mark whether a session's striper report has been filed to DWR.
 
-    Returns the number of rows updated (0 means the session_id wasn't found).
-    Scoped to session_id only — user is already authenticated at the app level.
+    Returns the number of rows updated (0 means session not found or not owned by current user).
     """
     from sqlalchemy import text
     with db.get_engine().begin() as conn:
         result = conn.execute(
-            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id"),
-            {"filed": int(bool(filed)), "id": session_id},
+            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id AND user_email = :email"),
+            {"filed": int(bool(filed)), "id": session_id, "email": db.get_current_user()},
         )
         return result.rowcount
 
@@ -254,6 +261,6 @@ def delete_session(session_id: int) -> None:
     from sqlalchemy import text
     with db.get_engine().begin() as conn:
         conn.execute(
-            text("DELETE FROM sessions WHERE id = :id"),
-            {"id": session_id},
+            text("DELETE FROM sessions WHERE id = :id AND user_email = :email"),
+            {"id": session_id, "email": db.get_current_user()},
         )

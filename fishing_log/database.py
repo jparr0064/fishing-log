@@ -6,10 +6,10 @@ the top of each Streamlit script run (in main()) before any DB operations.
 from __future__ import annotations
 
 import os
-import threading
 from pathlib import Path
 from typing import Optional
 
+import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
@@ -18,19 +18,18 @@ DATA_DIR = Path("/tmp/fishing_log_data")
 PROJECT_ROOT = Path("/tmp")
 
 # ---------------------------------------------------------------------------
-# Per-session user context (thread-local so each Streamlit session is isolated)
+# Per-session user context — stored in st.session_state so widget callbacks
+# that run on a different thread still see the correct user.
 # ---------------------------------------------------------------------------
-
-_local = threading.local()
 
 
 def set_current_user(email: str) -> None:
     """Call once per script run with the logged-in user's email."""
-    _local.user_email = email.lower().strip()
+    st.session_state["user_email"] = email.lower().strip()
 
 
 def get_current_user() -> str:
-    return getattr(_local, "user_email", "")
+    return st.session_state.get("user_email", "")
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +90,16 @@ def insert_session(session: dict) -> int:
         return int(result.scalar())
 
 
+def _assert_session_owned(conn, session_id: int) -> None:
+    """Raise if session_id doesn't belong to the current user."""
+    result = conn.execute(
+        text("SELECT 1 FROM sessions WHERE id = :id AND user_email = :email"),
+        {"id": session_id, "email": get_current_user()},
+    )
+    if result.fetchone() is None:
+        raise PermissionError(f"Session {session_id} not found or not owned by current user.")
+
+
 def insert_fish(session_id: int, fish_rows) -> None:
     """Insert one row per fish. Each item: {species, length, weight, kept?, depth?}."""
     rows = [
@@ -108,6 +117,7 @@ def insert_fish(session_id: int, fish_rows) -> None:
     if not rows:
         return
     with get_engine().begin() as conn:
+        _assert_session_owned(conn, session_id)
         conn.execute(
             text(
                 "INSERT INTO fish (session_id, species, length, weight, kept, depth) "
@@ -133,6 +143,7 @@ def insert_spots(session_id: int, spots) -> None:
     if not rows:
         return
     with get_engine().begin() as conn:
+        _assert_session_owned(conn, session_id)
         conn.execute(
             text(
                 "INSERT INTO spots (session_id, latitude, longitude, label, caught) "
