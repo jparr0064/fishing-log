@@ -89,6 +89,12 @@ streamlit run app.py --server.port 8765
    database_url   = "postgresql+psycopg2://..."
    dev_user_email = "you@example.com"
 
+   # Approved sign-in emails (allowlist). The owner (dev_user_email) is always
+   # allowed. Anyone signing in with a Google account NOT in this list is shown
+   # a "request access" page with a demo button instead of a real account.
+   # Omit this key to allow only the owner.
+   allowed_emails = ["friend1@gmail.com", "friend2@gmail.com"]
+
    [auth]
    redirect_uri  = "https://your-app.streamlit.app/oauth2callback"
    cookie_secret = "a-long-random-string"
@@ -101,7 +107,8 @@ streamlit run app.py --server.port 8765
 
    Configure the Google OAuth client's authorized redirect URI to match
    `redirect_uri`. When `[auth]` is present the login screen shows a **Sign in with
-   Google** button instead of the email form.
+   Google** button instead of the email form. To approve a new person later, add
+   their email to `allowed_emails` in the app's Secrets — no redeploy needed.
 
 3. The Supabase Postgres schema (`sessions`, `fish`, `spots`) must already exist —
    there is no in-app migration. To seed the demo account, run `python seed_demo.py`

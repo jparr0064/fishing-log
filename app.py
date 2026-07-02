@@ -180,6 +180,43 @@ def _show_login_page(oidc: bool) -> None:
                 st.rerun()
 
 
+def _allowed_emails() -> set:
+    """Approved real-account emails (lowercased). The owner is always allowed.
+
+    Reads the optional `allowed_emails` secret (a list, or a comma-separated
+    string). If it's absent, only the owner (`dev_user_email`) can sign in —
+    a safe default until you add people.
+    """
+    raw = st.secrets.get("allowed_emails", [])
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    allowed = {str(e).strip().lower() for e in raw if e and str(e).strip()}
+    owner = str(st.secrets.get("dev_user_email", "")).strip().lower()
+    if owner:
+        allowed.add(owner)
+    return allowed
+
+
+def _is_allowed(email: str) -> bool:
+    """Whether this signed-in email may have a real account (approval list)."""
+    return email.lower().strip() in _allowed_emails()
+
+
+def _show_not_approved_page(email: str) -> None:
+    """Signed in with Google, but not on the approved list — offer the demo."""
+    st.markdown("## 🎣 Fishing Log")
+    st.warning(
+        f"You're signed in as **{email}**, but that address isn't on the "
+        "approved list yet. Ask the owner to add you, then sign in again."
+    )
+    c1, c2 = st.columns([2, 1])
+    if c1.button("👀 Try the Demo instead →"):
+        st.session_state.user_email = DEMO_EMAIL
+        st.rerun()
+    if c2.button("Sign out"):
+        st.logout()
+
+
 def _get_user_email() -> str:
     """Return the current user's email, or stop to show the login screen.
 
@@ -194,7 +231,13 @@ def _get_user_email() -> str:
 
     if _oidc_active():
         if st.user.is_logged_in:
-            return st.user.email.lower().strip()
+            email = st.user.email.lower().strip()
+            # Only approved emails get a real account; others see the demo.
+            if not _is_allowed(email):
+                _show_not_approved_page(email)
+                st.stop()
+                return ""  # unreachable
+            return email
         _show_login_page(oidc=True)
         st.stop()
         return ""  # unreachable

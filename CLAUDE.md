@@ -130,10 +130,14 @@ The app runs on Postgres but tests use in-memory SQLite, so **keep SQL portable*
 - `ROUND(AVG(...), 2)` works on both; `ROUND(x::numeric, 2)` does not.
 
 ## Auth
-- **Production (Cloud):** when `[auth]`/`[auth.google]` are in secrets, `_oidc_active()`
-  is true (detected via `hasattr(st.user, "is_logged_in")`). Login shows a Google
-  button (`st.login("google")`); `st.user.email` is the identity. Sign-out calls
-  `st.logout()`.
+- **Production (Cloud):** when `[auth]`/`[auth.google]` are in secrets,
+  `_oidc_active()` is true (probed by accessing `st.user.is_logged_in` in a
+  try/except — it raises when `[auth]` is absent, and a bare `hasattr` once
+  crashed the app on Cloud). Login shows a Google button (`st.login("google")`);
+  `st.user.email` is the identity. Sign-out calls `st.logout()`.
+- **Approval list:** signed-in emails are checked against `_allowed_emails()`
+  (the `allowed_emails` secret + `dev_user_email`, always allowed). Non-approved
+  users get `_show_not_approved_page` (demo + sign-out), not a real account.
 - **Local dev:** no `[auth]` configured → a plain email form (honor-system, dev only).
 - **Demo:** the "Try the Demo →" button sets `st.session_state["user_email"]` to
   `DEMO_EMAIL` and bypasses auth in both modes. Demo is read-only unless the
