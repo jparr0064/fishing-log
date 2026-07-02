@@ -1,3 +1,3 @@
-"""Fishing Log — a local, offline fishing session tracker backed by SQLite."""
+"""Fishing Log — a multi-user cloud fishing session tracker backed by Supabase Postgres."""
 
 __version__ = "1.0.0"

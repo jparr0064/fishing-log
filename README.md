@@ -1,73 +1,124 @@
 # 🎣 Fishing Log
 
-A local, offline fishing-session tracker. Log each trip's conditions and catches,
-browse and search past sessions, see success-rate analytics, and plot your spots
-on an interactive map color-coded by how well you did. All data is stored in a
-local SQLite database — no internet required to log or analyze.
+A **multi-user cloud** fishing-session tracker, focused on **striper** fishing and
+**trolling** at Smith Mountain Lake, VA. Log each trip's conditions and catches,
+browse and search past sessions, see success-rate analytics, and plot your trolling
+routes and catch hotspots on an interactive map. Each angler signs in and sees only
+their own data.
+
+Built with **Streamlit** over a **Supabase Postgres** database, deployed on
+**Streamlit Community Cloud**.
 
 ## Features
 
-- **Data entry** — date, start/end time (hours auto-computed), location + GPS
-  coordinates, weather, air/water temperature, bait/lure, and **multiple species
-  with counts** per session.
-- **Browse & search** — filter by date range, location, and species; drill into
-  any session for full conditions (e.g. "where did I fish on a given day last year
-  and what were the conditions?").
-- **Analytics** — sortable summary tables of success rate, fish/hour, and totals by
-  **time of year, location, species, and weather**.
-- **Map** — Folium interactive map; markers colored red (skunked) / orange (1–4) /
-  green (5+). Exportable as a standalone `map.html`.
-- **Streamlit UI** — runs locally in your browser.
+- **Log a session** — date, start/end time (hours auto-computed), location + GPS,
+  weather, air/water temperature, bait/lure, fishing style, number of anglers, moon
+  phase (auto), notes, one or more map **spots** (trolling route), and **one row per
+  fish** with length, weight, depth, and whether it was kept.
+- **Browse & search** — filter by date range, location, and species; drill into any
+  session for full detail with its trolling route map.
+- **Analytics** — monthly trends, size distributions, personal bests, and a
+  **"what's working"** view (success by water temp, time of day, fishing style, bait,
+  weather, moon phase).
+- **Calendar** — month grid of trips with catch counts and moon phase.
+- **Map** — Folium map with per-session dots color-coded by catch success
+  (Skunked / Good / Great / Blowout) and a catch-hotspot heatmap toggle. Download a
+  standalone `map.html`.
+- **DWR report** — one click pre-fills the Virginia DWR "Striped Bass Angler Journal"
+  Google Form for a striper trip, and tracks which trips you've filed.
+- **Export** — download your sessions and per-fish data as CSV (also your backup).
+- **Demo account** — try it with 15 sample Smith Mountain Lake striper trips.
 
 ## Project layout
 
 ```
 app.py                  Streamlit UI (thin presentation layer)
 fishing_log/
-  database.py           SQLite connection, schema, low-level CRUD
-  data_entry.py         add/update/delete + validation
-  search.py             browse & filtered queries
+  database.py           SQLAlchemy engine, user scoping, low-level CRUD
+  data_entry.py         add/update/delete + validation (user-scoped)
+  search.py             browse & filtered read queries
   analytics.py          summary tables (pandas)
   map_view.py           Folium map builder
-  seed.py               sample data
-tests/                  pytest suite
-data/fishing_log.db     created on first run
+  dwr_report.py         VA DWR Google Form pre-fill
+tests/                  pytest suite (runs on in-memory SQLite)
+seed_demo.py            one-off seeder for the demo account
+.streamlit/
+  config.toml           theme + server config (committed)
+  secrets.toml          DB + auth credentials (git-ignored)
 ```
 
-## Setup
+Data lives in Supabase Postgres, isolated per user by `user_email`. There is no
+local database file.
+
+## Local development
 
 Requires Python 3.9+.
 
 ```bash
-cd "Fish APP"
 python -m venv .venv
 # Windows:
 .venv\Scripts\activate
 # macOS/Linux:
 source .venv/bin/activate
 
-pip install -r requirements.txt
+pip install -r requirements.txt pytest
 ```
 
-## Run
+Create `.streamlit/secrets.toml` (git-ignored) with at least:
+
+```toml
+database_url   = "postgresql+psycopg2://USER:PASSWORD@HOST:PORT/postgres"
+dev_user_email = "you@example.com"   # enables the "Edit demo data" toggle
+```
+
+With no `[auth]` section, the app runs in **local-dev mode**: it shows a plain email
+form to pick which user you are (no real authentication — dev only). Run it:
 
 ```bash
-streamlit run app.py
+streamlit run app.py --server.port 8765
 ```
 
-This opens the app in your browser. On first launch the database is created
-automatically; use **Load sample data** in the sidebar (or run
-`python -m fishing_log.seed`) to populate ~18 example sessions.
+## Deploy to Streamlit Community Cloud
+
+1. Push to GitHub and create the app on [share.streamlit.io](https://share.streamlit.io),
+   pointing at `app.py`.
+2. In the app's **Settings → Secrets**, add `database_url` and `dev_user_email` as
+   above, plus a Google OIDC `[auth]` block to enable real sign-in:
+
+   ```toml
+   database_url   = "postgresql+psycopg2://..."
+   dev_user_email = "you@example.com"
+
+   [auth]
+   redirect_uri  = "https://your-app.streamlit.app/oauth2callback"
+   cookie_secret = "a-long-random-string"
+
+   [auth.google]
+   client_id            = "...apps.googleusercontent.com"
+   client_secret        = "..."
+   server_metadata_url  = "https://accounts.google.com/.well-known/openid-configuration"
+   ```
+
+   Configure the Google OAuth client's authorized redirect URI to match
+   `redirect_uri`. When `[auth]` is present the login screen shows a **Sign in with
+   Google** button instead of the email form.
+
+3. The Supabase Postgres schema (`sessions`, `fish`, `spots`) must already exist —
+   there is no in-app migration. To seed the demo account, run `python seed_demo.py`
+   locally against the same `database_url`.
 
 ## Tests
 
 ```bash
-pip install pytest
-pytest
+pytest -q
 ```
 
-## Notes on "offline"
+The suite runs against an in-memory SQLite engine (fast, no network), so app SQL is
+kept portable across SQLite and Postgres.
 
-Logging, searching, and all analytics work with **no network connection**. The map
-page draws its background tiles from OpenStreetMap, which needs internet to *display*
-the basemap — but your session data and the markers themselves are entirely local.
+## Notes
+
+- **Not offline** — the app needs the network for Supabase and for the map's
+  OpenStreetMap basemap tiles.
+- **Backups** — export your CSVs periodically; "Clear my data" is irreversible and
+  there is no in-app backup.
