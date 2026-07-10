@@ -1,4 +1,10 @@
 streamlit==1.42.2
+# Pinned to versions contemporary with streamlit 1.42.2 — unpinned, the cloud
+# installs 2026-era pyarrow/numpy whose native code crashes the old streamlit
+# at startup (process killed, no traceback).
+pyarrow<20
+numpy<2.3
+protobuf<6
 Pillow>=9.0
 pandas>=2.0
 folium>=0.16
