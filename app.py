@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.4"
+APP_BUILD = "2026-07-11.5"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -663,7 +663,9 @@ def _dwr_nudge(sid: int):
             st.rerun()
 
         if already_filed:
-            st.success("✅ Already filed to DWR — you're all set.")
+            filed_on = detail.get("dwr_filed_at")
+            st.success("✅ Filed to DWR"
+                       + (f" on {filed_on}" if filed_on else "") + " — you're all set.")
         else:
             st.caption(
                 "Your trip is already saved. "
@@ -926,6 +928,33 @@ def page_browse():
 def _render_session_detail(detail: dict, sid: int):
     """Full read/edit detail for one session (used by the Browse cards)."""
     detail_spots = detail.get("spots") or []
+
+    # Actions up top so nobody has to scroll to find them.
+    if not _is_demo():
+        with st.expander("✏️ Edit this session"):
+            if detail.get("dwr_filed"):
+                filed_on = detail.get("dwr_filed_at")
+                st.warning(
+                    "This trip's DWR striper report was already filed"
+                    + (f" on {filed_on}" if filed_on else "")
+                    + " — changes you save here won't update what the state received. "
+                    "If the catch details changed materially, contact DWR directly.",
+                    icon="📋",
+                )
+                if st.button("Marked as filed by mistake? Unmark", key=f"unfile_{sid}"):
+                    data_entry.set_dwr_filed(sid, False)
+                    st.session_state.pop(f"dwr_filed_{sid}", None)
+                    _refresh()
+                    st.rerun()
+            skey = f"edit_spots_{sid}"
+            if skey not in st.session_state:
+                st.session_state[skey] = [
+                    {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
+                    for s in detail.get("spots", [])
+                ]
+            _spots_picker(skey, f"edit_map_{sid}")
+            _edit_form(detail)
+
     left, right = st.columns(2)
     with left:
         st.write(f"**Date:** {detail['date']}")
@@ -969,30 +998,38 @@ def _render_session_detail(detail: dict, sid: int):
     report = dwr_report.summarize(detail)
     with st.container(border=True):
         st.markdown("**📋 DWR Striped Bass Angler Journal**")
-        st.caption("Pre-fills the official Google Form for this outing — just review "
-                   "and hit Submit. The form collects your email from your Google login.")
         rc1, rc2, rc3 = st.columns(3)
         rc1.metric("Stripers harvested", report["harvested_n"])
         rc2.metric("Stripers released", report["released_n"])
         rc3.metric("Anglers", report["anglers"])
         st.caption(f"Harvested sizes: {report['harvested_sizes'] or '—'}  •  "
                    f"Released sizes: {report['released_sizes'] or '—'}")
-        bcol, fcol = st.columns([2, 2])
-        bcol.link_button("🎣 Open pre-filled DWR report",
-                         dwr_report.prefilled_url(detail), type="primary")
-        fk = f"dwr_filed_{sid}"
-        if fk not in st.session_state:
-            st.session_state[fk] = bool(detail.get("dwr_filed"))
 
-        def _toggle_filed(_sid=sid, _key=fk):
-            n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
-            if n == 0:
-                st.session_state.pop(_key, None)  # revert display to DB value
-                st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
-            _refresh()
+        if detail.get("dwr_filed"):
+            # Filed = done deal. The report is the state's copy now; no re-filing
+            # from here (a new trip means a new report on a new record).
+            filed_on = detail.get("dwr_filed_at")
+            st.success("DWR striper report filed"
+                       + (f" on {filed_on}" if filed_on else "") + ".", icon="✅")
+        else:
+            st.caption("Pre-fills the official Google Form for this outing — just review "
+                       "and hit Submit. The form collects your email from your Google login.")
+            bcol, fcol = st.columns([2, 2])
+            bcol.link_button("🎣 Step 1 — Open pre-filled DWR report",
+                             dwr_report.prefilled_url(detail), type="primary")
+            fk = f"dwr_filed_{sid}"
+            if fk not in st.session_state:
+                st.session_state[fk] = False
 
-        fcol.checkbox("✅ Filed to DWR", key=fk, on_change=_toggle_filed,
-                      disabled=_is_demo())
+            def _toggle_filed(_sid=sid, _key=fk):
+                n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+                if n == 0:
+                    st.session_state.pop(_key, None)  # revert display to DB value
+                    st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
+                _refresh()
+
+            fcol.checkbox("Step 2 — Mark as filed to DWR", key=fk, on_change=_toggle_filed,
+                          disabled=_is_demo())
 
     if detail_spots:
         st.markdown(f"**🗺️ Trolling route** ({len(detail_spots)} spot(s)) — "
@@ -1006,16 +1043,6 @@ def _render_session_detail(detail: dict, sid: int):
                   use_container_width=True, returned_objects=[], key=f"route_{sid}")
 
     if not _is_demo():
-        with st.expander("✏️ Edit this session"):
-            skey = f"edit_spots_{sid}"
-            if skey not in st.session_state:
-                st.session_state[skey] = [
-                    {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
-                    for s in detail.get("spots", [])
-                ]
-            _spots_picker(skey, f"edit_map_{sid}")
-            _edit_form(detail)
-
         if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
             data_entry.delete_session(sid)
             _refresh()
@@ -1125,6 +1152,9 @@ def _edit_form(detail: dict):
             "bait_lure": new_bait_e.strip() or bait_choice_e,
             "fishing_style": new_style_e.strip() or fishing_style_e,
             "num_anglers": num_anglers, "notes": notes,
+            # Preserve filed status — without this, validate_session defaults it
+            # to 0 and every edit would silently un-file the DWR report.
+            "dwr_filed": detail.get("dwr_filed"),
         }
         try:
             data_entry.update_session(sid, session, fish, spots)

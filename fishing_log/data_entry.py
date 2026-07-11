@@ -246,13 +246,17 @@ def update_session(
 def set_dwr_filed(session_id: int, filed: bool) -> int:
     """Mark whether a session's striper report has been filed to DWR.
 
+    Stamps dwr_filed_at with today's date when filing; clears it when unfiling.
     Returns the number of rows updated (0 means session not found or not owned by current user).
     """
     from sqlalchemy import text
+    filed_at = _date.today().isoformat() if filed else None
     with db.get_engine().begin() as conn:
         result = conn.execute(
-            text("UPDATE sessions SET dwr_filed = :filed WHERE id = :id AND user_email = :email"),
-            {"filed": int(bool(filed)), "id": session_id, "email": db.get_current_user()},
+            text("UPDATE sessions SET dwr_filed = :filed, dwr_filed_at = :filed_at "
+                 "WHERE id = :id AND user_email = :email"),
+            {"filed": int(bool(filed)), "filed_at": filed_at,
+             "id": session_id, "email": db.get_current_user()},
         )
         return result.rowcount
 

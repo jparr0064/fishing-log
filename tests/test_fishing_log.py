@@ -21,6 +21,7 @@ CREATE TABLE sessions (
     weather TEXT, air_temp REAL, water_temp REAL,
     bait_lure TEXT, fishing_style TEXT,
     num_anglers INTEGER DEFAULT 1, dwr_filed INTEGER DEFAULT 0,
+    dwr_filed_at TEXT,
     notes TEXT, moon_phase TEXT
 );
 CREATE TABLE fish (
