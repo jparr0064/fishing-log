@@ -303,3 +303,24 @@ def recent_defaults() -> dict:
             {"email": _user()},
         ).mappings().first()
     return dict(row) if row else {}
+
+
+def last_spot():
+    """(lat, lon) of the most recent session with coordinates, or None.
+
+    Used to center the spot-picker map on the user's last fishing spot —
+    most anglers return to the same water.
+    """
+    with db.get_engine().connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT latitude, longitude
+                FROM sessions
+                WHERE user_email = :email
+                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY date DESC, id DESC
+                LIMIT 1
+            """),
+            {"email": _user()},
+        ).mappings().first()
+    return (float(row["latitude"]), float(row["longitude"])) if row else None

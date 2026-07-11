@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.5"
+APP_BUILD = "2026-07-11.6"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -378,6 +378,11 @@ def _cached_overall_stats(user_email, cache_ver=0):
 
 
 @st.cache_data(ttl=300)
+def _cached_last_spot(user_email, cache_ver=0):
+    return search.last_spot()
+
+
+@st.cache_data(ttl=300)
 def _cached_personal_bests(user_email, cache_ver=0):
     return analytics.personal_bests()
 
@@ -530,7 +535,14 @@ def _spots_picker(state_key: str, map_key: str):
         sp["caught"] = bool(st.session_state[ck])
 
     zoom_key, center_key = f"{map_key}_zoom", f"{map_key}_center"
-    default_center = (spots[0]["lat"], spots[0]["lon"]) if spots else (DEFAULT_LAT, DEFAULT_LON)
+    if spots:
+        default_center = (spots[0]["lat"], spots[0]["lon"])
+    else:
+        # Center on the user's most recent trip's spot — most anglers return
+        # to the same water. Falls back to the lake default for new users.
+        default_center = _cached_last_spot(
+            db.get_current_user(), cache_ver=_cache_ver()
+        ) or (DEFAULT_LAT, DEFAULT_LON)
     view_center = st.session_state.get(center_key, default_center)
     view_zoom = st.session_state.get(zoom_key, 15)
 
