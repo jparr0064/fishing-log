@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.6"
+APP_BUILD = "2026-07-11.7"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -380,6 +380,17 @@ def _cached_overall_stats(user_email, cache_ver=0):
 @st.cache_data(ttl=300)
 def _cached_last_spot(user_email, cache_ver=0):
     return search.last_spot()
+
+
+@st.cache_data
+def _user_guide_bytes():
+    """The bundled user-guide PDF, or None if it isn't in the deploy."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "Fishing_Log_User_Guide.pdf")
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
 
 
 @st.cache_data(ttl=300)
@@ -1671,6 +1682,13 @@ def main():
         "Export": page_backup,
     }[page]()
 
+    guide = _user_guide_bytes()
+    if guide:
+        st.sidebar.download_button(
+            "📖 User Guide (PDF)", guide,
+            file_name="Fishing_Log_User_Guide.pdf", mime="application/pdf",
+            use_container_width=True,
+        )
     st.sidebar.caption(f"build {APP_BUILD}")
     _mobile_sidebar_autoclose()
 
