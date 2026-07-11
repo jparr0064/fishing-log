@@ -96,6 +96,36 @@ def _inject_css():
             .hero-chip { flex: 1; padding: 8px 6px; min-width: 0; }
             .hero-title { font-size: 1.3rem; }
             .hero-loc { font-size: 1rem; }
+            /* Calendar nav: keep Prev / Month / Today / Next on ONE row */
+            .st-key-cal_nav [data-testid="stHorizontalBlock"] {
+              flex-wrap: nowrap !important; gap: .3rem; align-items: center;
+            }
+            .st-key-cal_nav [data-testid="stColumn"],
+            .st-key-cal_nav [data-testid="column"] {
+              min-width: 0 !important; width: auto !important; flex: 0 0 auto !important;
+            }
+            .st-key-cal_nav [data-testid="stColumn"]:nth-child(3),
+            .st-key-cal_nav [data-testid="column"]:nth-child(3) {
+              flex: 1 1 auto !important;   /* month title takes remaining space */
+            }
+            .st-key-cal_nav [data-testid="stColumn"]:nth-child(2),
+            .st-key-cal_nav [data-testid="column"]:nth-child(2) {
+              display: none;               /* hide "Year ago" on phones — use Prev */
+            }
+            .st-key-cal_nav .stButton button {
+              min-height: 38px; padding: 6px 10px; font-size: .85rem; white-space: nowrap;
+            }
+            .st-key-cal_nav h3 { font-size: 1.05rem !important; padding-top: 8px !important; }
+            /* Collapsed-sidebar control: make it an obvious "Menu" pill */
+            [data-testid="stSidebarCollapsedControl"] {
+              background: #0e7490; border-radius: 10px; padding: 2px 12px 2px 4px;
+              display: flex; align-items: center;
+              box-shadow: 0 1px 4px rgba(0,0,0,.25);
+            }
+            [data-testid="stSidebarCollapsedControl"] button { color: #fff; }
+            [data-testid="stSidebarCollapsedControl"]::after {
+              content: "Menu"; color: #fff; font-weight: 600; font-size: .9rem;
+            }
           }
         </style>
         """,
@@ -1430,8 +1460,9 @@ def page_calendar():
     yr = st.session_state.cal_year
     mo = st.session_state.cal_month
 
-    # Navigation bar
-    c_prev, c_yago, c_title, c_today, c_next = st.columns([1, 1.3, 4, 1, 1])
+    # Navigation bar (keyed container so mobile CSS can keep it on one row)
+    with st.container(key="cal_nav"):
+        c_prev, c_yago, c_title, c_today, c_next = st.columns([1, 1.3, 4, 1, 1])
     if c_prev.button("◄ Prev"):
         if mo == 1:
             st.session_state.cal_month, st.session_state.cal_year = 12, yr - 1
@@ -1581,6 +1612,44 @@ def main():
         "Map": page_map,
         "Export": page_backup,
     }[page]()
+
+    _mobile_sidebar_autoclose()
+
+
+def _mobile_sidebar_autoclose():
+    """On phone-width screens, close the sidebar overlay after a nav item is
+    tapped — otherwise the new page renders hidden behind the menu. Desktop
+    (>640px) is untouched. Installed once per browser page via a parent-window
+    flag; survives Streamlit reruns because the listener lives on the parent
+    document, which is never replaced."""
+    import streamlit.components.v1 as components
+    components.html(
+        """
+        <script>
+        (function () {
+          const P = window.parent;
+          if (P.__flSidebarAutoClose) return;
+          P.__flSidebarAutoClose = true;
+          P.document.addEventListener("click", function (e) {
+            if (P.innerWidth > 640) return;
+            const sidebar = P.document.querySelector('section[data-testid="stSidebar"]');
+            if (!sidebar || !sidebar.contains(e.target)) return;
+            const label = e.target.closest("label");
+            const group = e.target.closest('div[role="radiogroup"]');
+            if (!label || !group) return;   // only the Navigate radio items
+            setTimeout(function () {
+              const btn =
+                sidebar.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
+                sidebar.querySelector('button[kind="header"]') ||
+                sidebar.querySelector('[data-testid="baseButton-header"]');
+              if (btn) btn.click();
+            }, 250);
+          }, true);
+        })();
+        </script>
+        """,
+        height=0,
+    )
 
 
 if __name__ == "__main__":
