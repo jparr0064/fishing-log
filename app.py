@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.2"
+APP_BUILD = "2026-07-11.3"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -119,15 +119,21 @@ def _inject_css():
               white-space: nowrap; width: 100%;
             }
             .st-key-cal_nav h3 { font-size: 1.1rem !important; padding-top: 0 !important; }
-            /* Collapsed-sidebar control: make it an obvious "Menu" pill */
+            /* Collapsed-sidebar control: the BUTTON itself is the "Menu" pill,
+               so the whole pill (arrow + text) is one tap target */
             [data-testid="stSidebarCollapsedControl"] {
-              background: #0e7490; border-radius: 10px; padding: 2px 12px 2px 4px;
-              display: flex; align-items: center;
+              background: transparent; padding: 0; box-shadow: none;
+            }
+            [data-testid="stSidebarCollapsedControl"] button {
+              background: #0e7490 !important; color: #fff !important;
+              border-radius: 10px; padding: 4px 14px 4px 6px;
+              width: auto; min-height: 40px;
+              display: inline-flex; align-items: center;
               box-shadow: 0 1px 4px rgba(0,0,0,.25);
             }
-            [data-testid="stSidebarCollapsedControl"] button { color: #fff; }
-            [data-testid="stSidebarCollapsedControl"]::after {
+            [data-testid="stSidebarCollapsedControl"] button::after {
               content: "Menu"; color: #fff; font-weight: 600; font-size: .9rem;
+              margin-left: 2px;
             }
             /* Open-sidebar collapse arrow: label it so it's obvious */
             [data-testid="stSidebarCollapseButton"] button::after {
@@ -793,9 +799,12 @@ def page_log_session():
 
         notes = st.text_area("Notes", height=80)
 
-        st.markdown("**Fish caught** — one row per fish (species, length, weight). "
-                    "Check **Kept?** for harvested fish (vs. released). "
-                    "Leave empty if skunked; weight defaults to 0 if unknown.")
+        st.markdown("**Fish caught** — pick a species to start a row, then fill in "
+                    "length/weight. Check **Kept?** for harvested fish (vs. released). "
+                    "Leave the table empty if skunked.")
+        st.caption("Rows with no species are ignored. The checkbox on the far left "
+                   "just selects rows for deletion — check one and a 🗑 appears at "
+                   "the top of the table.")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor")
 
         submitted = st.form_submit_button("Save session", type="primary")
