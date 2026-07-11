@@ -56,8 +56,8 @@ def B(text):
 # ---- Cover banner ----
 banner = Table(
     [[Paragraph("Fishing Log — User Guide", title_style)],
-     [Paragraph("Smith Mountain Lake &nbsp;·&nbsp; a private fishing log for our crew", subtitle_style)],
-     [Paragraph("Version 2.0 &nbsp;·&nbsp; created by John Parrent", ParagraphStyle(
+     [Paragraph("Smith Mountain Lake &nbsp;·&nbsp; A Private Fishing Log for Our Crew", subtitle_style)],
+     [Paragraph("Version 2.0 &nbsp;·&nbsp; Created by John Parrent", ParagraphStyle(
          "GuideVer", parent=subtitle_style, fontSize=9.5, spaceBefore=4))]],
     colWidths=[6.8 * inch],
 )
@@ -89,12 +89,12 @@ story.append(Paragraph(
 story.append(Paragraph(
     "<b>First-time heads-up:</b> Google will show a screen that says \"Google hasn't verified "
     "this app.\" Click <b>Advanced</b>, then <b>Go to Fishing Log</b>, then <b>Continue</b>. "
-    "Google tacks the word \"unsafe\" onto that link only because our little club app hasn't "
-    "gone through their formal (paid) verification process — the app itself is private and "
-    "safe. You only see this screen once.", tip))
+    "Google tags the word \"unsafe\" under that link only because our app hasn't gone through "
+    "their formal (paid) verification process. The app itself is private, and you only see "
+    "this screen once.", tip))
 story.append(Paragraph(
     "If sign-in tells you that you don't have access yet, your email hasn't been added to the "
-    "approved list — just ask John Parrent (striper club member) to add you.", body))
+    "approved list — just ask John Parrent (Striper Club Member) to add you.", body))
 story.append(Paragraph("Want to look around first?", h2))
 story.append(Paragraph(
     "Click <b>Try the Demo</b> on the sign-in page. You'll get a read-only tour with 15 sample "
