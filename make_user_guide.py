@@ -87,11 +87,11 @@ story.append(Paragraph(
     "private to your email address: nobody else in the club can see your data, and you "
     "can't see theirs.", body))
 story.append(Paragraph(
-    "<b>First-time heads-up:</b> Google will show a screen that says \"Google hasn't verified "
-    "this app.\" Click <b>Advanced</b>, then <b>Go to Fishing Log</b>, then <b>Continue</b>. "
-    "Google tags the word \"unsafe\" under that link only because our app hasn't gone through "
-    "their formal (paid) verification process. The app itself is private, and you only see "
-    "this screen once.", tip))
+    "<b>First-time heads-up:</b> most people go straight through, but Google MAY show a "
+    "one-time screen that says \"Google hasn't verified this app.\" If you see it, click "
+    "<b>Advanced</b>, then <b>Go to Fishing Log</b>, then <b>Continue</b>. Google shows that "
+    "notice only because our app hasn't gone through their formal (paid) verification "
+    "process. The app itself is private, and you'll never see the screen again.", tip))
 story.append(Paragraph(
     "If sign-in tells you that you don't have access yet, your email hasn't been added to the "
     "approved list — just ask John Parrent (Striper Club Member) to add you.", body))
