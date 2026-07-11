@@ -76,6 +76,27 @@ def _inject_css():
             text-transform: uppercase; letter-spacing: .4px;
           }
           .trip-meta { color: #51606b; font-size: .88rem; line-height: 1.5; }
+
+          /* ---- Phone-only adjustments (desktop is untouched) ---- */
+          @media (max-width: 640px) {
+            .block-container { padding-top: 1rem; padding-left: .8rem; padding-right: .8rem; }
+            /* 44px minimum touch targets for buttons and inputs */
+            .stButton button, .stDownloadButton button, .stLinkButton a {
+              min-height: 44px; font-size: 1rem; padding: 10px 14px;
+            }
+            .stSelectbox [data-baseweb="select"], .stTextInput input,
+            .stNumberInput input, .stDateInput input {
+              min-height: 44px; font-size: 1rem;
+            }
+            [data-testid="stCheckbox"] { min-height: 40px; }
+            /* Hero: stack title above the stat chips, spread chips full width */
+            .hero { flex-direction: column; align-items: flex-start;
+                    padding: 14px 16px; gap: 12px; }
+            .hero-stats { width: 100%; justify-content: space-between; }
+            .hero-chip { flex: 1; padding: 8px 6px; min-width: 0; }
+            .hero-title { font-size: 1.3rem; }
+            .hero-loc { font-size: 1rem; }
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1324,6 +1345,20 @@ _CAL_CSS = """
 .fc-legend{display:flex;gap:18px;margin-top:10px;font-size:12px;color:#666;align-items:center;}
 .leg-box{width:13px;height:13px;border:1px solid #ccc;display:inline-block;margin-right:4px;vertical-align:middle;border-radius:2px;}
 .leg-c{background:#e8f5e9;}.leg-s{background:#b8b8b8;}.leg-n{background:#fff;}
+
+/* Phone-only: compress the grid so a full month fits without side-scrolling */
+@media (max-width: 640px) {
+  .fc-wrap{padding:8px;border-radius:10px;}
+  .fc-table th{font-size:9px;padding:4px 1px;}
+  .fc-table td{height:56px;padding:2px 3px;}
+  .day-n{font-size:11px;}
+  .day-n.today-n{width:18px;height:18px;line-height:18px;font-size:10px;}
+  .moon-e{font-size:10px;}
+  .trip-fish,.trip-sk{font-size:9px;margin-top:1px;}
+  .trip-multi{font-size:8px;}
+  .trip-loc{display:none;} /* location doesn't fit — shown in the trip list below */
+  .fc-legend{gap:10px;font-size:10px;flex-wrap:wrap;}
+}
 </style>
 """
 
