@@ -29,6 +29,10 @@ except ImportError:  # pragma: no cover
 
 st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
+# Shown at the bottom of the sidebar so we can tell at a glance which build
+# the cloud is actually serving. Bump on each deploy-relevant change.
+APP_BUILD = "2026-07-11.1"
+
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
 DEFAULT_LAT = 37.16463
@@ -1616,6 +1620,7 @@ def main():
         "Export": page_backup,
     }[page]()
 
+    st.sidebar.caption(f"build {APP_BUILD}")
     _mobile_sidebar_autoclose()
 
 
