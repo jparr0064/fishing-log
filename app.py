@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.1"
+APP_BUILD = "2026-07-11.2"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -83,7 +83,8 @@ def _inject_css():
 
           /* ---- Phone-only adjustments (desktop is untouched) ---- */
           @media (max-width: 640px) {
-            .block-container { padding-top: 1rem; padding-left: .8rem; padding-right: .8rem; }
+            /* enough top padding that the fixed "Menu" pill clears the hero banner */
+            .block-container { padding-top: 4.6rem; padding-left: .8rem; padding-right: .8rem; }
             /* 44px minimum touch targets for buttons and inputs */
             .stButton button, .stDownloadButton button, .stLinkButton a {
               min-height: 44px; font-size: 1rem; padding: 10px 14px;
@@ -1635,27 +1636,37 @@ def _mobile_sidebar_autoclose():
         """
         <script>
         (function () {
+          // This script runs inside a component iframe that Streamlit destroys
+          // and recreates on every rerun — a listener registered from here dies
+          // with the iframe (works once, then never again). So instead, inject
+          // the listener as a <script> element into the PARENT page itself: it
+          // then lives in the parent's JS realm and survives all reruns.
+          // Written as a real function, then serialized with .toString() into a
+          // <script> tag in the parent page — avoids quote-escaping bugs and
+          // runs entirely in the parent realm.
+          function parentCode() {
+            function collapse(attempt) {
+              var sb = document.querySelector('section[data-testid="stSidebar"]');
+              if (!sb) return;
+              if (sb.getAttribute('aria-expanded') === 'false') return;
+              var btn = sb.querySelector('[data-testid="stSidebarCollapseButton"] button');
+              if (btn) btn.click();
+              if (attempt < 6) setTimeout(function () { collapse(attempt + 1); }, 300);
+            }
+            document.addEventListener('click', function (e) {
+              if (window.innerWidth > 640) return;
+              var sb = document.querySelector('section[data-testid="stSidebar"]');
+              if (!sb || !sb.contains(e.target)) return;
+              if (!e.target.closest('label') || !e.target.closest('div[role="radiogroup"]')) return;
+              setTimeout(function () { collapse(0); }, 200);
+            }, true);
+          }
           const P = window.parent;
           if (P.__flSidebarAutoClose) return;
           P.__flSidebarAutoClose = true;
-          // Re-query the sidebar FRESH on every attempt: the nav click triggers
-          // a Streamlit rerun that replaces the sidebar DOM node, so any
-          // reference captured at click time goes stale before the timeout.
-          function collapse(attempt) {
-            const sb = P.document.querySelector('section[data-testid="stSidebar"]');
-            if (!sb) return;
-            if (sb.getAttribute("aria-expanded") === "false") return;  // done
-            const btn = sb.querySelector('[data-testid="stSidebarCollapseButton"] button');
-            if (btn) btn.click();
-            if (attempt < 6) setTimeout(function () { collapse(attempt + 1); }, 300);
-          }
-          P.document.addEventListener("click", function (e) {
-            if (P.innerWidth > 640) return;
-            const sb = P.document.querySelector('section[data-testid="stSidebar"]');
-            if (!sb || !sb.contains(e.target)) return;
-            if (!e.target.closest("label") || !e.target.closest('div[role="radiogroup"]')) return;
-            setTimeout(function () { collapse(0); }, 200);
-          }, true);
+          const s = P.document.createElement('script');
+          s.textContent = '(' + parentCode.toString() + ')();';
+          P.document.body.appendChild(s);
         })();
         </script>
         """,
