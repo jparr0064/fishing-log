@@ -65,8 +65,8 @@ banner.setStyle(TableStyle([
     ("BACKGROUND", (0, 0), (-1, -1), TEAL),
     ("LEFTPADDING", (0, 0), (-1, -1), 18),
     ("RIGHTPADDING", (0, 0), (-1, -1), 18),
-    ("TOPPADDING", (0, 0), (0, 0), 14),
-    ("BOTTOMPADDING", (0, -1), (0, -1), 14),
+    ("TOPPADDING", (0, 0), (0, 0), 24),
+    ("BOTTOMPADDING", (0, -1), (0, -1), 16),
 ]))
 story.append(banner)
 story.append(Spacer(1, 14))
