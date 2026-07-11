@@ -96,26 +96,24 @@ def _inject_css():
             .hero-chip { flex: 1; padding: 8px 6px; min-width: 0; }
             .hero-title { font-size: 1.3rem; }
             .hero-loc { font-size: 1rem; }
-            /* Calendar nav: keep Prev / Month / Today / Next on ONE row */
+            /* Calendar nav: month title on its own top row, then all four
+               buttons (incl. Year ago) sharing one even row beneath it */
             .st-key-cal_nav [data-testid="stHorizontalBlock"] {
-              flex-wrap: nowrap !important; gap: .3rem; align-items: center;
+              flex-wrap: wrap !important; gap: .3rem; align-items: center;
             }
             .st-key-cal_nav [data-testid="stColumn"],
             .st-key-cal_nav [data-testid="column"] {
-              min-width: 0 !important; width: auto !important; flex: 0 0 auto !important;
+              min-width: 0 !important; width: auto !important; flex: 1 1 auto !important;
             }
             .st-key-cal_nav [data-testid="stColumn"]:nth-child(3),
             .st-key-cal_nav [data-testid="column"]:nth-child(3) {
-              flex: 1 1 auto !important;   /* month title takes remaining space */
-            }
-            .st-key-cal_nav [data-testid="stColumn"]:nth-child(2),
-            .st-key-cal_nav [data-testid="column"]:nth-child(2) {
-              display: none;               /* hide "Year ago" on phones — use Prev */
+              order: -1; flex: 0 0 100% !important;   /* title first, full width */
             }
             .st-key-cal_nav .stButton button {
-              min-height: 38px; padding: 6px 10px; font-size: .85rem; white-space: nowrap;
+              min-height: 38px; padding: 6px 4px; font-size: .82rem;
+              white-space: nowrap; width: 100%;
             }
-            .st-key-cal_nav h3 { font-size: 1.05rem !important; padding-top: 8px !important; }
+            .st-key-cal_nav h3 { font-size: 1.1rem !important; padding-top: 0 !important; }
             /* Collapsed-sidebar control: make it an obvious "Menu" pill */
             [data-testid="stSidebarCollapsedControl"] {
               background: #0e7490; border-radius: 10px; padding: 2px 12px 2px 4px;
@@ -125,6 +123,11 @@ def _inject_css():
             [data-testid="stSidebarCollapsedControl"] button { color: #fff; }
             [data-testid="stSidebarCollapsedControl"]::after {
               content: "Menu"; color: #fff; font-weight: 600; font-size: .9rem;
+            }
+            /* Open-sidebar collapse arrow: label it so it's obvious */
+            [data-testid="stSidebarCollapseButton"] button::after {
+              content: "Hide menu"; font-size: .85rem; font-weight: 600;
+              margin-left: 4px;
             }
           }
         </style>
@@ -1630,20 +1633,23 @@ def _mobile_sidebar_autoclose():
           const P = window.parent;
           if (P.__flSidebarAutoClose) return;
           P.__flSidebarAutoClose = true;
+          // Re-query the sidebar FRESH on every attempt: the nav click triggers
+          // a Streamlit rerun that replaces the sidebar DOM node, so any
+          // reference captured at click time goes stale before the timeout.
+          function collapse(attempt) {
+            const sb = P.document.querySelector('section[data-testid="stSidebar"]');
+            if (!sb) return;
+            if (sb.getAttribute("aria-expanded") === "false") return;  // done
+            const btn = sb.querySelector('[data-testid="stSidebarCollapseButton"] button');
+            if (btn) btn.click();
+            if (attempt < 6) setTimeout(function () { collapse(attempt + 1); }, 300);
+          }
           P.document.addEventListener("click", function (e) {
             if (P.innerWidth > 640) return;
-            const sidebar = P.document.querySelector('section[data-testid="stSidebar"]');
-            if (!sidebar || !sidebar.contains(e.target)) return;
-            const label = e.target.closest("label");
-            const group = e.target.closest('div[role="radiogroup"]');
-            if (!label || !group) return;   // only the Navigate radio items
-            setTimeout(function () {
-              const btn =
-                sidebar.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
-                sidebar.querySelector('button[kind="header"]') ||
-                sidebar.querySelector('[data-testid="baseButton-header"]');
-              if (btn) btn.click();
-            }, 250);
+            const sb = P.document.querySelector('section[data-testid="stSidebar"]');
+            if (!sb || !sb.contains(e.target)) return;
+            if (!e.target.closest("label") || !e.target.closest('div[role="radiogroup"]')) return;
+            setTimeout(function () { collapse(0); }, 200);
           }, true);
         })();
         </script>
