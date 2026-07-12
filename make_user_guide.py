@@ -180,6 +180,19 @@ B("Every trip's spot on one map, color-coded by how the day went: Skunked (0), G
 B("Click a pin for the trip's date, conditions, bait, and catch.")
 B("Turn on the <b>catch hotspots</b> checkbox for a heat map of everywhere you've actually caught fish.")
 B("The same date/location/species filters apply, and there's a full-screen toggle.")
+story.append(Paragraph("Tracking your trolling route", h2))
+story.append(Paragraph(
+    "This is one of the coolest features. When you log a trip, don't stop at one pin — click "
+    "the map again at each point along your troll. Later, when you open that trip in Browse "
+    "&amp; Search, you'll see your whole route drawn out: the pins are numbered in the order "
+    "you dropped them, a line with arrows shows the direction you trolled, and a fish icon "
+    "marks every spot where you checked the \"fish caught here\" box.", body))
+story.append(Paragraph(
+    "Not trolling? Multiple pins still work great — drop one on each hole you fished that day.", body))
+story.append(Paragraph(
+    "<b>Good to know:</b> the big Map page shows ONE pin per trip, and it uses your FIRST pin. "
+    "So make your first click the spot that best represents the trip — usually where you "
+    "started — then add the rest of the route after it.", tip))
 
 # ---- Export ----
 story.append(Paragraph("8. Export (your backup)", h1))
@@ -212,6 +225,8 @@ faq = [
      "download the Export CSVs now and then."),
     ("Something looks broken.", "Note what page you were on and what you clicked, then tell John "
      "Parrent. The 'build' number at the bottom of the menu helps troubleshooting."),
+    ("Have an idea to make it better?", "Tell John Parrent! The app is homegrown and always "
+     "improving — member suggestions are where the best features come from."),
 ]
 rows = [[Paragraph(f"<b>{q}</b>", body), Paragraph(a, body)] for q, a in faq]
 t = Table(rows, colWidths=[2.1 * inch, 4.7 * inch])
