@@ -110,6 +110,19 @@ B("Click the map to drop your starting pin. Click again to add each spot along y
 B("The map opens centered on the water you fished <b>last trip</b> — handy if you pound the same spots.")
 B("Check the box under a spot to mark where a fish was actually caught (shows a fish icon on the map).")
 B("Use the <b>Last</b> button to undo the most recent pin or <b>Clear</b> to start over.")
+story.append(Paragraph("Tracking your trolling route", h2))
+story.append(Paragraph(
+    "This is one of the coolest features. Don't stop at one pin — click the map again at "
+    "each point along your troll. Later, when you open that trip in Browse &amp; Search, "
+    "you'll see your whole route drawn out: the pins are numbered in the order you dropped "
+    "them, a line with arrows shows the direction you trolled, and a fish icon marks every "
+    "spot where you checked the \"fish caught here\" box.", body))
+story.append(Paragraph(
+    "Not trolling? Multiple pins still work great — drop one on each hole you fished that day.", body))
+story.append(Paragraph(
+    "<b>Good to know:</b> the big Map page shows ONE pin per trip, and it uses your FIRST pin. "
+    "So make your first click the spot that best represents the trip — usually where you "
+    "started — then add the rest of the route after it.", tip))
 story.append(Paragraph("Fill in the details", h2))
 B("Date, start/end time (dropdowns, 15-minute steps — hours fished computes automatically).")
 B("Weather, air and water temperature, number of anglers.")
@@ -189,20 +202,9 @@ B("Every trip's spot on one map, color-coded by how the day went: Skunked (0), G
   "Great (4–6), Blowout (7+).")
 B("Click a pin for the trip's date, conditions, bait, and catch.")
 B("Turn on the <b>catch hotspots</b> checkbox for a heat map of everywhere you've actually caught fish.")
+B("Each trip appears as one pin — specifically the FIRST pin you dropped when logging it "
+  "(your full trolling route lives in the trip's detail under Browse &amp; Search).")
 B("The same date/location/species filters apply, and there's a full-screen toggle.")
-story.append(Paragraph("Tracking your trolling route", h2))
-story.append(Paragraph(
-    "This is one of the coolest features. When you log a trip, don't stop at one pin — click "
-    "the map again at each point along your troll. Later, when you open that trip in Browse "
-    "&amp; Search, you'll see your whole route drawn out: the pins are numbered in the order "
-    "you dropped them, a line with arrows shows the direction you trolled, and a fish icon "
-    "marks every spot where you checked the \"fish caught here\" box.", body))
-story.append(Paragraph(
-    "Not trolling? Multiple pins still work great — drop one on each hole you fished that day.", body))
-story.append(Paragraph(
-    "<b>Good to know:</b> the big Map page shows ONE pin per trip, and it uses your FIRST pin. "
-    "So make your first click the spot that best represents the trip — usually where you "
-    "started — then add the rest of the route after it.", tip))
 
 # ---- Export ----
 story.append(Paragraph("8. Export (your backup)", h1))
