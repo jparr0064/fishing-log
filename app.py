@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.10"
+APP_BUILD = "2026-07-11.11"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -619,7 +619,7 @@ def _spots_picker(state_key: str, map_key: str):
             sp["caught"] = bool(st.session_state[f"{map_key}_c{i}"])
 
 
-def _blank_fish_df(rows: int = 5) -> pd.DataFrame:
+def _blank_fish_df(rows: int = 1) -> pd.DataFrame:
     return pd.DataFrame({
         "species": [None] * rows, "length": [0.0] * rows,
         "depth": [None] * rows, "weight": [0.0] * rows, "kept": [False] * rows,
@@ -824,8 +824,9 @@ def page_log_session():
 
         notes = st.text_area("Notes", height=80)
 
-        st.markdown("**Fish caught** — pick a species to start a row, then fill in "
-                    "length/weight. Check **Kept?** for harvested fish (vs. released).")
+        st.markdown("**Fish caught** — pick a species, then fill in length/weight. "
+                    "Check **Kept?** for harvested fish (vs. released). "
+                    "**Add another fish** by clicking the blank row at the bottom of the table.")
         st.caption("Only the species is required — length, depth, and weight are optional "
                    "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
                    "Just leave the table alone. The far-left checkbox selects rows "
@@ -863,7 +864,8 @@ def page_log_session():
             _clear_spot_state("spots", "loc_picker")
             st.session_state["pending_dwr_sid"] = new_id
             st.session_state["log_saved_msg"] = (
-                f"✅ Session saved — {total} fish, {len(spots)} spot(s) at {location_name}."
+                f"✅ Session saved — **{total} fish total**, "
+                f"{len(spots)} spot(s) at {location_name}."
             )
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")

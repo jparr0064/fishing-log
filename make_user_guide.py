@@ -131,9 +131,12 @@ B("Style: Downlines, Jigging, Light Lines, Planer Boards, Topwater, Trolling, or
 B("Notes: anything worth remembering — bait ball at 25 ft, birds working the point, etc.")
 story.append(Paragraph("Enter your fish", h2))
 story.append(Paragraph(
-    "In the <b>Fish caught</b> table, pick a species to start a row, then enter length, depth, "
-    "and weight. Check <b>Kept?</b> for harvested fish (leave unchecked for released). "
-    "Got skunked? Just leave the table alone — rows without a species are ignored.", body))
+    "In the <b>Fish caught</b> table, pick a species, then enter length, depth, and weight. "
+    "Caught more than one? Click the blank row at the bottom of the table and it becomes a "
+    "new fish — the table grows one row at a time as you need it. Check <b>Kept?</b> for "
+    "harvested fish (leave unchecked for released). Got skunked? Just leave the table alone "
+    "— rows without a species are ignored. When you hit Save, the confirmation shows your "
+    "total fish count so you can double-check the tally.", body))
 story.append(Paragraph(
     "<b>Only the species is required</b> — a fish with just a species still counts in every "
     "catch stat (totals, success rate, fish per hour). Length, depth, and weight are optional: "
