@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.9"
+APP_BUILD = "2026-07-11.10"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -826,8 +826,9 @@ def page_log_session():
 
         st.markdown("**Fish caught** — pick a species to start a row, then fill in "
                     "length/weight. Check **Kept?** for harvested fish (vs. released).")
-        st.caption("Only rows with a species picked get saved — if you got skunked, "
-                   "just leave the table alone. The far-left checkbox selects rows "
+        st.caption("Only the species is required — length, depth, and weight are optional "
+                   "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
+                   "Just leave the table alone. The far-left checkbox selects rows "
                    "for deletion (check one and a 🗑 appears at the top of the table).")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor")
 

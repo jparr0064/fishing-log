@@ -122,6 +122,12 @@ story.append(Paragraph(
     "and weight. Check <b>Kept?</b> for harvested fish (leave unchecked for released). "
     "Got skunked? Just leave the table alone — rows without a species are ignored.", body))
 story.append(Paragraph(
+    "<b>Only the species is required</b> — a fish with just a species still counts in every "
+    "catch stat (totals, success rate, fish per hour). Length, depth, and weight are optional: "
+    "leave any of them blank with no issue. The trade-off is simple — whatever you enter feeds "
+    "your Analytics, and whatever you skip just sits out those charts. Measure your fish and "
+    "the Sizes and Personal Bests pages come alive.", body))
+story.append(Paragraph(
     "The small checkbox on the far LEFT of each row is only for deleting rows: check it and a "
     "trash can appears at the top of the table. You don't need it for normal entry.", tip))
 story.append(Paragraph(
@@ -167,6 +173,10 @@ B("Below the grid, every trip that month is listed — click <b>View →</b> to 
 story.append(Paragraph("6. Analytics", h1))
 story.append(Paragraph(
     "This is where the log pays off. Pick a year and browse the tabs:", body))
+story.append(Paragraph(
+    "Analytics runs on whatever you've entered — a fish logged without a weight still counts "
+    "as a fish everywhere; it just won't appear in the size and weight charts. The more "
+    "detail you log, the more these pages can tell you.", tip))
 B("<b>Monthly:</b> trips, fish, and success rate by month.")
 B("<b>Sizes:</b> how your fish measure up over the season.")
 B("<b>Personal Bests:</b> your longest and heaviest fish, by species, with dates.")
