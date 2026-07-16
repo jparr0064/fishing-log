@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.11"
+APP_BUILD = "2026-07-11.12"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -626,15 +626,64 @@ def _blank_fish_df(rows: int = 1) -> pd.DataFrame:
     })
 
 
+_EDITOR_ROW_PX = 35  # glide-data-grid default row height in st.data_editor
+
+
+def _reset_fish_editor(key: str):
+    """Forget a fish editor's staged rows (call after a successful save)."""
+    for k in (f"{key}_data", f"{key}_seed"):
+        st.session_state.pop(k, None)
+    ver = st.session_state.pop(f"{key}_ver", 0)
+    st.session_state.pop(f"{key}_v{ver}", None)
+
+
 def _fish_editor(df: pd.DataFrame, key: str):
-    """A data editor with one row per fish: species, length, depth, weight, kept."""
+    """A data editor with one row per fish: species, length, depth, weight, kept.
+
+    Must be rendered OUTSIDE any st.form — inside a form the browser holds all
+    edits until submit, so nothing server-side can react while the user types.
+    Outside a form, every committed edit reruns the script, which lets us:
+
+    - size the editor to fit EVERY row plus the trailing blank "add a fish"
+      row, so the add-row never scrolls out of sight (no internal scrollbar,
+      no false "you've maxed out" wall at ~10 rows), and
+    - show a live "Fish entered: N" count below the table.
+
+    Growing works by re-seeding under a VERSIONED widget key: the working
+    frame lives in session state; when the row count changes we adopt the
+    edited frame, bump the version (which gives the editor a brand-new key),
+    and rerun so the height is recomputed. The new key is the load-bearing
+    part: Streamlit keeps a keyed editor's added_rows/edited_rows deltas in
+    session state and re-applies them when the same key re-mounts — so
+    adopting added rows into the base WITHOUT changing the key makes the
+    stale deltas append the same rows again on every rerun (rows multiply).
+    A fresh key per adoption means the widget always starts clean on top of
+    a base frame that already carries every committed value.
+    """
     if "kept" not in df.columns:
         df = df.assign(kept=False)
     if "depth" not in df.columns:
         df = df.assign(depth=None)
     df["kept"] = df["kept"].fillna(False).astype(bool)
-    return st.data_editor(
-        df, num_rows="dynamic", use_container_width=True,
+
+    data_key, seed_key, ver_key = f"{key}_data", f"{key}_seed", f"{key}_ver"
+    st.session_state.setdefault(ver_key, 0)
+    seed_fp = df.to_json(orient="records")
+    if st.session_state.get(seed_key) != seed_fp:
+        # Genuinely new seed (first render, or reopening after a save):
+        # restart from it under a fresh widget key.
+        st.session_state[seed_key] = seed_fp
+        st.session_state[data_key] = df.reset_index(drop=True)
+        st.session_state[ver_key] += 1
+    base = st.session_state[data_key]
+    widget_key = f"{key}_v{st.session_state[ver_key]}"
+
+    # Header + every data row + the blank add-row, plus a small pad so
+    # rounding never produces an internal scrollbar.
+    height = (len(base) + 2) * _EDITOR_ROW_PX + 8
+
+    edited = st.data_editor(
+        base, num_rows="dynamic", use_container_width=True, height=height,
         column_config={
             "species": st.column_config.SelectboxColumn("Species", options=SPECIES, required=False),
             "length": st.column_config.NumberColumn("Length (in)", min_value=0.0, step=0.5, format="%.1f"),
@@ -644,8 +693,25 @@ def _fish_editor(df: pd.DataFrame, key: str):
             "kept": st.column_config.CheckboxColumn("Kept?", help="Checked = harvested/kept; unchecked = released", default=False),
         },
         column_order=["species", "length", "depth", "weight", "kept"],
-        key=key,
+        key=widget_key,
     )
+
+    if len(edited) != len(base):
+        # Rows were added or deleted — adopt the edited frame (it carries all
+        # committed values), retire this widget's deltas, and remount under a
+        # new key with a height that fits the new row count.
+        st.session_state[data_key] = edited.reset_index(drop=True)
+        st.session_state[ver_key] += 1
+        st.session_state.pop(widget_key, None)
+        st.rerun()
+
+    n = len(_fish_from_editor(edited))
+    if n:
+        extra = " (blank rows aren't counted)" if len(edited) > n else ""
+        st.caption(f"🎣 **Fish entered: {n}**{extra}")
+    else:
+        st.caption("🎣 **Fish entered: 0** — leave the table blank for a skunked trip.")
+    return edited
 
 
 def _fish_from_editor(edited: pd.DataFrame) -> list:
@@ -757,6 +823,17 @@ def page_log_session():
     # Spot picker lives outside the form so map clicks can rerun interactively.
     _spots_picker("spots", "loc_picker")
 
+    # Fish table also lives outside the form so it can grow with the catch
+    # and keep a live count (see _fish_editor).
+    st.markdown("**Fish caught** — pick a species, then fill in length/weight. "
+                "Check **Kept?** for harvested fish (vs. released). "
+                "**Add another fish** by clicking the blank row at the bottom of the table.")
+    st.caption("Only the species is required — length, depth, and weight are optional "
+               "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
+               "Just leave the table alone. The far-left checkbox selects rows "
+               "for deletion (check one and a 🗑 appears at the top of the table).")
+    catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor")
+
     # Smart defaults: pre-fill from the most recent session and known baits.
     defaults = search.recent_defaults()
     prev_baits = search.baits_by_frequency()
@@ -824,15 +901,6 @@ def page_log_session():
 
         notes = st.text_area("Notes", height=80)
 
-        st.markdown("**Fish caught** — pick a species, then fill in length/weight. "
-                    "Check **Kept?** for harvested fish (vs. released). "
-                    "**Add another fish** by clicking the blank row at the bottom of the table.")
-        st.caption("Only the species is required — length, depth, and weight are optional "
-                   "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
-                   "Just leave the table alone. The far-left checkbox selects rows "
-                   "for deletion (check one and a 🗑 appears at the top of the table).")
-        catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor")
-
         submitted = st.form_submit_button("Save session", type="primary")
 
     if submitted:
@@ -867,6 +935,11 @@ def page_log_session():
                 f"✅ Session saved — **{total} fish total**, "
                 f"{len(spots)} spot(s) at {location_name}."
             )
+            # Clear the fish table for the next entry (it lives outside the
+            # form, so clear_on_submit doesn't reach it) and rerun so it
+            # renders blank alongside the cleared fields.
+            _reset_fish_editor("catch_editor")
+            st.rerun()
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
 
@@ -1094,6 +1167,14 @@ def _edit_form(detail: dict):
     existing_bait = detail.get("bait_lure") or ""
     existing_style = detail.get("fishing_style") or ""
 
+    # Fish table lives outside the form so it can grow with the catch and
+    # keep a live count (see _fish_editor).
+    existing = (
+        pd.DataFrame(detail["fish"]) if detail["fish"] else _blank_fish_df(1)
+    )
+    st.markdown("**Fish caught** (one row per fish)")
+    catch_editor = _fish_editor(existing, key=f"e_fish_{sid}")
+
     with st.form(f"edit_form_{sid}"):
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -1160,12 +1241,6 @@ def _edit_form(detail: dict):
 
         notes = st.text_area("Notes", value=detail.get("notes") or "", key=f"e_notes_{sid}")
 
-        existing = (
-            pd.DataFrame(detail["fish"]) if detail["fish"] else _blank_fish_df(1)
-        )
-        st.markdown("**Fish caught** (one row per fish)")
-        catch_editor = _fish_editor(existing, key=f"e_fish_{sid}")
-
         saved = st.form_submit_button("💾 Save changes", type="primary")
 
     if saved:
@@ -1187,6 +1262,7 @@ def _edit_form(detail: dict):
             _refresh()
             # Reset edit state so the expander collapses and reloads fresh.
             _clear_spot_state(f"edit_spots_{sid}", f"edit_map_{sid}")
+            _reset_fish_editor(f"e_fish_{sid}")
             st.session_state["saved_msg"] = f"✅ Session #{sid} changes saved."
             st.rerun()
         except data_entry.ValidationError as exc:
