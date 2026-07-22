@@ -31,7 +31,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-11.12"
+APP_BUILD = "2026-07-19.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -337,10 +337,25 @@ def _is_demo() -> bool:
 
 @st.cache_resource
 def _bootstrap():
-    """Wire up DATABASE_URL from secrets and initialise the engine once."""
+    """Wire up DATABASE_URL from secrets and initialise the engine once.
+
+    Also applies idempotent schema upgrades (guarded with IF NOT EXISTS, so
+    they are safe to run on every startup and are no-ops once applied).
+    """
     import os
     if "database_url" in st.secrets:
         os.environ["DATABASE_URL"] = st.secrets["database_url"]
+    try:
+        from sqlalchemy import text
+        with db.get_engine().begin() as conn:
+            # v2026-07: per-spot fish counts for the ×N route-map badge.
+            conn.execute(text(
+                "ALTER TABLE spots ADD COLUMN IF NOT EXISTS fish_count integer"
+            ))
+    except Exception:
+        # Never block startup on a migration hiccup — the app still works
+        # for everything except saving per-spot counts.
+        pass
     return True
 
 
@@ -531,19 +546,34 @@ def _clear_spot_state(state_key: str, map_key: str):
     st.session_state.pop(state_key, None)
 
 
-def _spots_picker(state_key: str, map_key: str):
-    """Multi-spot map picker (outside any form). Manages a list of
-    {lat, lon, caught} in ``st.session_state[state_key]``. Click the map to add
-    each spot; check a box to mark it as a catch spot."""
-    st.session_state.setdefault(state_key, [])
-    spots = st.session_state[state_key]
+def _spot_count_default(sp: dict) -> int:
+    """Seed a spot's count input: stored count, else 1 for a legacy
+    caught-only spot (recorded before counts existed), else 0."""
+    if sp.get("fish_count") is not None:
+        return int(sp["fish_count"])
+    return 1 if sp.get("caught") else 0
 
-    # Sync each spot's caught flag from its checkbox state BEFORE drawing the map.
+
+def _sync_spot_counts(spots: list, map_key: str):
+    """Mirror per-spot count widget state onto the spot dicts."""
     for i, sp in enumerate(spots):
         ck = f"{map_key}_c{i}"
         if ck not in st.session_state:
-            st.session_state[ck] = bool(sp.get("caught"))
-        sp["caught"] = bool(st.session_state[ck])
+            st.session_state[ck] = _spot_count_default(sp)
+        count = int(st.session_state[ck] or 0)
+        sp["fish_count"] = count
+        sp["caught"] = count > 0
+
+
+def _spots_picker(state_key: str, map_key: str, defer_rerun: bool = False):
+    """Multi-spot map picker (outside any form). Manages a list of
+    {lat, lon, caught, fish_count} in ``st.session_state[state_key]``. Click
+    the map to add each spot; enter how many fish you caught at each spot."""
+    st.session_state.setdefault(state_key, [])
+    spots = st.session_state[state_key]
+
+    # Sync each spot's count/caught from widget state BEFORE drawing the map.
+    _sync_spot_counts(spots, map_key)
 
     zoom_key, center_key = f"{map_key}_zoom", f"{map_key}_center"
     if spots:
@@ -607,16 +637,28 @@ def _spots_picker(state_key: str, map_key: str):
             lc = result["last_clicked"]
             st.session_state[center_key] = (lc["lat"], lc["lng"])
             if _append_spot(spots, lc["lat"], lc["lng"]):
-                st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
-                st.rerun()
+                # See _fish_editor: never st.rerun() while a form submit is
+                # pending this run, or the save is silently lost.
+                if not defer_rerun:
+                    st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
+                    st.rerun()
 
-    # Per-spot "fish caught here" toggles.
+    # Per-spot fish counts (0 = no fish there). Spots with fish show a 🐟 on
+    # the map, with a ×N badge when 2 or more were caught at the same spot.
     if spots:
-        st.caption("Mark spots where you caught a fish (shown as a 🐟 on the map):")
+        st.caption("How many fish did you catch at each spot? "
+                   "(0 = none — spots with fish show as a 🐟 on the map)")
         cols = st.columns(min(4, len(spots)))
         for i, sp in enumerate(spots):
-            cols[i % len(cols)].checkbox(f"Spot {i + 1} 🎣", key=f"{map_key}_c{i}")
-            sp["caught"] = bool(st.session_state[f"{map_key}_c{i}"])
+            cols[i % len(cols)].number_input(
+                f"Spot {i + 1} 🎣", min_value=0, step=1, key=f"{map_key}_c{i}",
+            )
+        _sync_spot_counts(spots, map_key)
+        assigned = sum(sp.get("fish_count") or 0 for sp in spots)
+        if assigned:
+            st.caption(f"🐟 **{assigned} fish** assigned across "
+                       f"{sum(1 for sp in spots if sp.get('fish_count'))} spot(s). "
+                       "It doesn't have to match the fish table exactly — best guess is fine.")
 
 
 def _blank_fish_df(rows: int = 1) -> pd.DataFrame:
@@ -637,7 +679,7 @@ def _reset_fish_editor(key: str):
     st.session_state.pop(f"{key}_v{ver}", None)
 
 
-def _fish_editor(df: pd.DataFrame, key: str):
+def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
     """A data editor with one row per fish: species, length, depth, weight, kept.
 
     Must be rendered OUTSIDE any st.form — inside a form the browser holds all
@@ -703,7 +745,14 @@ def _fish_editor(df: pd.DataFrame, key: str):
         st.session_state[data_key] = edited.reset_index(drop=True)
         st.session_state[ver_key] += 1
         st.session_state.pop(widget_key, None)
-        st.rerun()
+        # defer_rerun=True means a form submit is pending THIS run. st.rerun()
+        # here would abort the script before the submit is processed — the
+        # click (and the save) would be silently lost while every widget kept
+        # its old value, which looks like "the app kept my previous session".
+        # The adoption above is already complete, so just let the run continue;
+        # the remount (and correct height) happens on the next natural rerun.
+        if not defer_rerun:
+            st.rerun()
 
     n = len(_fish_from_editor(edited))
     if n:
@@ -737,13 +786,15 @@ def _dwr_nudge(sid: int):
         return
     report = dwr_report.summarize(detail)
     already_filed = bool(detail.get("dwr_filed"))
+    n_stripers = report["harvested_n"] + report["released_n"]
+    total_fish = int(detail.get("total_fish") or 0)
 
     with st.container(border=True):
         hcol, xcol = st.columns([11, 1])
         hcol.markdown(
             f"**📋 DWR Striper Report — {detail['date']} · {detail['location_name']}**  \n"
-            f"Harvested: **{report['harvested_n']}** · "
-            f"Released: **{report['released_n']}** · "
+            f"Stripers caught: **{n_stripers}** "
+            f"({report['harvested_n']} kept · {report['released_n']} released) · "
             f"Anglers: **{report['anglers']}** · "
             f"Hours: **{report['hours'] or '—'}**"
         )
@@ -751,10 +802,26 @@ def _dwr_nudge(sid: int):
             st.session_state.pop("pending_dwr_sid", None)
             st.rerun()
 
+        # Safety nets: make a bad save impossible to miss, and explain why the
+        # numbers can legitimately be zero.
+        if total_fish == 0:
+            st.warning(
+                "This session saved with **0 fish**. If you did catch fish and "
+                "they're missing here, they didn't make it into the save — add "
+                "them under **Browse & Search → Edit this session** before "
+                "filing the report.",
+                icon="⚠️",
+            )
+        elif n_stripers == 0:
+            st.caption("ℹ️ This trip's fish were all non-striper species — the DWR "
+                       "journal only counts stripers, so the report shows zeros.")
+
         if already_filed:
             filed_on = detail.get("dwr_filed_at")
             st.success("✅ Filed to DWR"
-                       + (f" on {filed_on}" if filed_on else "") + " — you're all set.")
+                       + (f" on {filed_on}" if filed_on else "")
+                       + " — you're done with this trip. Dismiss this card with ✕, "
+                         "or just log your next session.")
         else:
             st.caption(
                 "Your trip is already saved. "
@@ -778,7 +845,10 @@ def _dwr_nudge(sid: int):
                     st.session_state.pop(_key, None)
                     st.toast("⚠️ Could not save — try again.", icon="⚠️")
                 elif new_val:
-                    st.session_state.pop("pending_dwr_sid", None)
+                    # Keep the card on screen: it re-renders in its ✅ "Filed —
+                    # you're done" state so it's obvious the trip is complete
+                    # (vanishing silently made people wonder what happened).
+                    st.toast("✅ Marked as filed to DWR — you're done with this trip.")
                     _refresh()
                 else:
                     _refresh()
@@ -820,19 +890,14 @@ def page_log_session():
         )
         return
 
-    # Spot picker lives outside the form so map clicks can rerun interactively.
-    _spots_picker("spots", "loc_picker")
-
-    # Fish table also lives outside the form so it can grow with the catch
-    # and keep a live count (see _fish_editor).
-    st.markdown("**Fish caught** — pick a species, then fill in length/weight. "
-                "Check **Kept?** for harvested fish (vs. released). "
-                "**Add another fish** by clicking the blank row at the bottom of the table.")
-    st.caption("Only the species is required — length, depth, and weight are optional "
-               "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
-               "Just leave the table alone. The far-left checkbox selects rows "
-               "for deletion (check one and a 🗑 appears at the top of the table).")
-    catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor")
+    # The spot picker and fish table live OUTSIDE the form so they can rerun
+    # interactively. They render into these slots (visually above the form)
+    # but EXECUTE after it, so a pending "Save session" click is consumed
+    # before either of them can call st.rerun() — a rerun issued before the
+    # form is processed silently discards the submit (nothing saves, nothing
+    # clears, and the page looks stuck on the previous session).
+    picker_slot = st.container()
+    fish_slot = st.container()
 
     # Smart defaults: pre-fill from the most recent session and known baits.
     defaults = search.recent_defaults()
@@ -902,6 +967,22 @@ def page_log_session():
         notes = st.text_area("Notes", height=80)
 
         submitted = st.form_submit_button("Save session", type="primary")
+
+    # Now render the interactive pieces into their slots above the form.
+    # `submitted` is known here, so both defer their internal st.rerun()s
+    # whenever a save is being processed this run.
+    with picker_slot:
+        _spots_picker("spots", "loc_picker", defer_rerun=submitted)
+    with fish_slot:
+        st.markdown("**Fish caught** — pick a species, then fill in length/weight. "
+                    "Check **Kept?** for harvested fish (vs. released). "
+                    "**Add another fish** by clicking the blank row at the bottom of the table.")
+        st.caption("Only the species is required — length, depth, and weight are optional "
+                   "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
+                   "Just leave the table alone. The far-left checkbox selects rows "
+                   "for deletion (check one and a 🗑 appears at the top of the table).")
+        catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
+                                    defer_rerun=submitted)
 
     if submitted:
         fish = _fish_from_editor(catch_editor)
@@ -1048,7 +1129,9 @@ def _render_session_detail(detail: dict, sid: int):
             skey = f"edit_spots_{sid}"
             if skey not in st.session_state:
                 st.session_state[skey] = [
-                    {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
+                    {"lat": s["latitude"], "lon": s["longitude"],
+                     "caught": bool(s.get("caught")),
+                     "fish_count": s.get("fish_count")}
                     for s in detail.get("spots", [])
                 ]
             _spots_picker(skey, f"edit_map_{sid}")
@@ -1133,9 +1216,10 @@ def _render_session_detail(detail: dict, sid: int):
     if detail_spots:
         st.markdown(f"**🗺️ Trolling route** ({len(detail_spots)} spot(s)) — "
                     "numbered in order; the arrowed line shows direction; "
-                    "🐟 marks where a fish was caught.")
+                    "🐟 marks where a fish was caught (×N = how many).")
         route_pts = [
-            {"lat": s["latitude"], "lon": s["longitude"], "caught": bool(s.get("caught"))}
+            {"lat": s["latitude"], "lon": s["longitude"],
+             "caught": bool(s.get("caught")), "fish_count": s.get("fish_count")}
             for s in detail_spots
         ]
         st_folium(map_view.build_route_map(route_pts), height=320,
@@ -1168,12 +1252,13 @@ def _edit_form(detail: dict):
     existing_style = detail.get("fishing_style") or ""
 
     # Fish table lives outside the form so it can grow with the catch and
-    # keep a live count (see _fish_editor).
+    # keep a live count. It renders into this slot (above the form) but
+    # executes AFTER it, so its internal st.rerun() can't swallow a pending
+    # "Save changes" click (see page_log_session for the full story).
     existing = (
         pd.DataFrame(detail["fish"]) if detail["fish"] else _blank_fish_df(1)
     )
-    st.markdown("**Fish caught** (one row per fish)")
-    catch_editor = _fish_editor(existing, key=f"e_fish_{sid}")
+    fish_slot = st.container()
 
     with st.form(f"edit_form_{sid}"):
         c1, c2, c3 = st.columns(3)
@@ -1242,6 +1327,10 @@ def _edit_form(detail: dict):
         notes = st.text_area("Notes", value=detail.get("notes") or "", key=f"e_notes_{sid}")
 
         saved = st.form_submit_button("💾 Save changes", type="primary")
+
+    with fish_slot:
+        st.markdown("**Fish caught** (one row per fish)")
+        catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved)
 
     if saved:
         fish = _fish_from_editor(catch_editor)

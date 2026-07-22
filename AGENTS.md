@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## What this is
 
@@ -53,7 +53,7 @@ Cloud installs; native auth `st.login`/`st.user` landed in 1.42.0). The local
 - `[auth]` + `[auth.google]` — **optional**; present them to enable Google OIDC
   (see Auth below). Absent locally → the app falls back to a plain email form.
 
-**Sibling app / port collisions:** a separate **Wardrobe** app at `C:\CLAUDE\Fashion`
+**Sibling app / port collisions:** a separate **Wardrobe** app at `C:\Codex\Fashion`
 (own venv, pinned to **port 8766**). Both default to Streamlit's 8501, which
 previously caused the fishing app's browser tab to open the wardrobe app. Each
 launcher pins its own port — keep it that way.
@@ -169,8 +169,8 @@ Dashboard (KPIs, personal bests, DWR-unfiled nudge, recent trips) · Log a Sessi
 detail with route map, DWR report + filed toggle, edit, delete)
 ## Related projects (don't blend)
 
-- `C:\CLAUDE\Anglers Ledger` — **The Angler's Ledger**, a separate single-file HTML fishing log sold on Etsy. No shared code; it was inspired by this app ("ported from the Python app" comments refer to this codebase). Feature ideas may flow both ways (Records to Beat, species badges, per-species PB metric are candidates to port INTO this Streamlit app), but the two products deploy and evolve independently.
-- `C:\CLAUDE\YouTube` — YouTube/Amazon-affiliate research project. Unrelated to this codebase.
+- `C:\Codex\Anglers Ledger` — **The Angler's Ledger**, a separate single-file HTML fishing log sold on Etsy. No shared code; it was inspired by this app ("ported from the Python app" comments refer to this codebase). Feature ideas may flow both ways (Records to Beat, species badges, per-species PB metric are candidates to port INTO this Streamlit app), but the two products deploy and evolve independently.
+- `C:\Codex\YouTube` — YouTube/Amazon-affiliate research project. Unrelated to this codebase.
 user`. All tests run scoped to a fixed `TEST_EMAIL`.
 `test_write_scoping` inserts a row as another user and asserts update/delete/
 set_dwr_filed cannot touch it. When adding data logic, add a test here and keep the
@@ -181,3 +181,5 @@ See `REVIEW.md` for the current audit and the remaining P2/P3 items (cache
 invalidation scope, "Clear my data" safety, air/water temp default pre-fill, minor
 ordering/zoom nits). Water-temp auto-fetch and packaged-folder distribution are older
 ideas from the local era and may no longer apply to the cloud version.
+
+## Imported Claude Cowork project instructions

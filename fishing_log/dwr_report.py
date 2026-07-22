@@ -59,10 +59,12 @@ def summarize(session: dict) -> dict:
         "hours": _fmt_num(session.get("hours_fished")),
         "harvested_n": harvested_n,
         # Always N/A when none harvested; otherwise the recorded sizes (you can
-        # fill/adjust on the form for the rare harvest).
-        "harvested_sizes": "N/A" if harvested_n == 0 else _sizes(kept),
+        # fill/adjust on the form for the rare harvest). When fish were logged
+        # without a length, fall back to "Not measured" — never a blank field
+        # (a count with an empty sizes box looks like the prefill failed).
+        "harvested_sizes": "N/A" if harvested_n == 0 else (_sizes(kept) or "Not measured"),
         "released_n": released_n,
-        "released_sizes": "N/A" if released_n == 0 else _sizes(released),
+        "released_sizes": "N/A" if released_n == 0 else (_sizes(released) or "Not measured"),
     }
 
 

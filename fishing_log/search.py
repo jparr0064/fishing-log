@@ -108,7 +108,7 @@ def get_session(session_id: int) -> Optional[dict]:
 
         spots = conn.execute(
             text(
-                "SELECT latitude, longitude, label, caught FROM spots "
+                "SELECT latitude, longitude, label, caught, fish_count FROM spots "
                 "WHERE session_id = :sid ORDER BY id"
             ),
             {"sid": session_id},

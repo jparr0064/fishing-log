@@ -128,14 +128,19 @@ def insert_fish(session_id: int, fish_rows) -> None:
 
 
 def insert_spots(session_id: int, spots) -> None:
-    """Insert spot rows. Each item: {lat, lon, label?, caught?}."""
+    """Insert spot rows. Each item: {lat, lon, label?, caught?, fish_count?}.
+
+    ``fish_count`` is how many fish were caught at the spot (nullable —
+    legacy rows recorded only the boolean ``caught`` flag).
+    """
     rows = [
         {
             "session_id": session_id,
             "latitude": float(s["lat"]),
             "longitude": float(s["lon"]),
             "label": s.get("label"),
-            "caught": int(bool(s.get("caught"))),
+            "caught": int(bool(s.get("caught")) or (s.get("fish_count") or 0) > 0),
+            "fish_count": int(s["fish_count"]) if s.get("fish_count") is not None else None,
         }
         for s in spots
         if s.get("lat") is not None and s.get("lon") is not None
@@ -146,8 +151,8 @@ def insert_spots(session_id: int, spots) -> None:
         _assert_session_owned(conn, session_id)
         conn.execute(
             text(
-                "INSERT INTO spots (session_id, latitude, longitude, label, caught) "
-                "VALUES (:session_id, :latitude, :longitude, :label, :caught)"
+                "INSERT INTO spots (session_id, latitude, longitude, label, caught, fish_count) "
+                "VALUES (:session_id, :latitude, :longitude, :label, :caught, :fish_count)"
             ),
             rows,
         )

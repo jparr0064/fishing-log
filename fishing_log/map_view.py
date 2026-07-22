@@ -83,11 +83,21 @@ def build_map(df: pd.DataFrame) -> folium.Map:
     return fmap
 
 
-def _spot_divicon(number: int, caught: bool) -> folium.DivIcon:
+def _spot_divicon(number: int, caught: bool, fish_count=None) -> folium.DivIcon:
     """Route marker. Every spot shows its order number; spots where a fish was
-    caught show a fish picture with the number as a small corner badge."""
+    caught show a fish picture with the number as a small corner badge. When
+    two or more fish were caught at the spot, a gold ×N badge (bottom corner)
+    shows the count — text-based on purpose, never color alone (CB-safe)."""
     if caught:
         # Fish picture + numbered badge so order is still readable.
+        count_badge = ""
+        if fish_count and int(fish_count) >= 2:
+            count_badge = (
+                f'<div style="position:absolute;bottom:-4px;right:-6px;background:#f0e442;'
+                'border:1px solid #333;border-radius:8px;min-width:18px;height:14px;'
+                'padding:0 2px;line-height:13px;font-size:9px;font-weight:bold;'
+                f'color:#000;">&times;{int(fish_count)}</div>'
+            )
         html = (
             '<div style="position:relative;width:30px;height:30px;text-align:center;">'
             '<div style="font-size:24px;line-height:30px;'
@@ -95,6 +105,7 @@ def _spot_divicon(number: int, caught: bool) -> folium.DivIcon:
             f'<div style="position:absolute;top:-3px;right:-4px;background:#1f78b4;'
             'border:1px solid #fff;border-radius:50%;width:16px;height:16px;'
             f'line-height:15px;font-size:10px;font-weight:bold;color:#fff;">{number}</div>'
+            f'{count_badge}'
             '</div>'
         )
         return folium.DivIcon(html=html, icon_size=(30, 30), icon_anchor=(15, 15))
@@ -109,19 +120,28 @@ def _spot_divicon(number: int, caught: bool) -> folium.DivIcon:
 def draw_route(fmap: folium.Map, points) -> None:
     """Draw a numbered, directional trolling route on a map.
 
-    ``points`` is an ordered list of {lat, lon, caught}. A moving AntPath shows
-    the direction of travel; numbered markers show order; gold 🎣 markers mark
-    spots where a fish was caught.
+    ``points`` is an ordered list of {lat, lon, caught, fish_count?}. A moving
+    AntPath shows the direction of travel; numbered markers show order; 🐟
+    markers mark spots where a fish was caught, with a gold ×N badge when two
+    or more were caught there.
     """
     coords = [(p["lat"], p["lon"]) for p in points]
     if len(coords) >= 2:
         AntPath(coords, color="#1f78b4", weight=4, delay=1000, dash_array=[10, 20]).add_to(fmap)
     for i, p in enumerate(points, 1):
         caught = bool(p.get("caught"))
+        fc = p.get("fish_count")
+        if caught:
+            if fc:
+                tip = f"Spot {i} · \U0001F3A3 {int(fc)} fish caught"
+            else:
+                tip = f"Spot {i} · \U0001F3A3 fish caught"
+        else:
+            tip = f"Spot {i}"
         folium.Marker(
             (p["lat"], p["lon"]),
-            icon=_spot_divicon(i, caught),
-            tooltip=f"Spot {i}" + (" · \U0001F3A3 fish caught" if caught else ""),
+            icon=_spot_divicon(i, caught, fc),
+            tooltip=tip,
         ).add_to(fmap)
 
 

@@ -43,6 +43,7 @@ BAIT_LURE_OPTIONS = [
     "Jigging Spoon",
     "Umbrella Rig",
     "Topwater Plug",
+    "Jighead",
 ]
 
 
@@ -168,7 +169,13 @@ def validate_fish(fish: List[dict]) -> List[dict]:
 
 
 def validate_spots(spots: List[dict]) -> List[dict]:
-    """Validate map spots (lat/long bounds). Each item: {lat, lon, label?}."""
+    """Validate map spots (lat/long bounds).
+
+    Each item: {lat, lon, label?, caught?, fish_count?}. ``fish_count`` (how
+    many fish were caught at the spot) is optional and kept as None when not
+    provided (legacy rows only recorded the boolean ``caught``); a positive
+    count implies ``caught``.
+    """
     cleaned = []
     for s in spots or []:
         if s.get("lat") is None or s.get("lon") is None:
@@ -178,9 +185,15 @@ def validate_spots(spots: List[dict]) -> List[dict]:
             raise ValidationError("Spot latitude must be between -90 and 90.")
         if not (-180 <= lon <= 180):
             raise ValidationError("Spot longitude must be between -180 and 180.")
+        fc = s.get("fish_count")
+        if fc is not None:
+            fc = int(fc)
+            if fc < 0:
+                raise ValidationError("Spot fish count can't be negative.")
         cleaned.append({
             "lat": lat, "lon": lon, "label": s.get("label"),
-            "caught": bool(s.get("caught")),
+            "caught": bool(s.get("caught")) or (fc or 0) > 0,
+            "fish_count": fc,
         })
     return cleaned
 

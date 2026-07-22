@@ -33,7 +33,8 @@ CREATE TABLE fish (
 CREATE TABLE spots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    latitude REAL, longitude REAL, label TEXT, caught INTEGER DEFAULT 0
+    latitude REAL, longitude REAL, label TEXT, caught INTEGER DEFAULT 0,
+    fish_count INTEGER
 );
 """
 
@@ -287,6 +288,37 @@ def test_spot_caught_flag_roundtrip_and_route_map():
     assert "ud83d" in html  # 🐟 JSON-escaped
 
 
+def test_spot_fish_count_roundtrip_and_badge():
+    sid = data_entry.add_session(
+        {"date": "2026-06-07", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7, "fish_count": 0},
+         {"lat": 37.15, "lon": -79.72, "fish_count": 10}],
+    )
+    spots = search.get_session(sid)["spots"]
+    assert [s["fish_count"] for s in spots] == [0, 10]
+    # A positive count implies caught; zero does not.
+    assert [bool(s["caught"]) for s in spots] == [False, True]
+
+    pts = [{"lat": s["latitude"], "lon": s["longitude"],
+            "caught": bool(s["caught"]), "fish_count": s["fish_count"]} for s in spots]
+    html = map_view.build_route_map(pts)._repr_html_().lower()
+    assert "times;10" in html          # ×10 badge rendered
+    assert "10 fish caught" in html    # tooltip includes the count
+
+
+def test_spot_fish_count_optional_and_validated():
+    # Legacy shape (no count) still works and stores NULL.
+    sid = data_entry.add_session(
+        {"date": "2026-06-08", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.7, "caught": True}],
+    )
+    s = search.get_session(sid)["spots"][0]
+    assert s["fish_count"] is None and bool(s["caught"])
+
+    with pytest.raises(data_entry.ValidationError):
+        data_entry.validate_spots([{"lat": 37.1, "lon": -79.7, "fish_count": -1}])
+
+
 def test_caught_spot_points():
     data_entry.add_session(
         {"date": "2026-06-25", "location_name": "SML"}, [],
@@ -461,6 +493,24 @@ def test_dwr_harvested_na_when_zero():
     assert r["harvested_n"] == 0
     assert r["harvested_sizes"] == "N/A"
     assert r["released_sizes"] == '26"'
+
+
+def test_dwr_sizes_fallback_when_unmeasured():
+    """A striper logged without a length must never leave the sizes field blank
+    while its count is prefilled (looks like the prefill half-failed)."""
+    from fishing_log import dwr_report
+    session = {
+        "date": "2026-07-01", "num_anglers": 1,
+        "fish": [
+            {"species": "Striper", "length": 0, "weight": 0, "kept": False},
+            {"species": "Striper", "length": 0, "weight": 0, "kept": True},
+        ],
+    }
+    r = dwr_report.summarize(session)
+    assert r["released_n"] == 1 and r["released_sizes"] == "Not measured"
+    assert r["harvested_n"] == 1 and r["harvested_sizes"] == "Not measured"
+    url = dwr_report.prefilled_url(session)
+    assert "Not+measured" in url
 
 
 def test_dwr_filed_roundtrip():
