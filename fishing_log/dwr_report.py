@@ -68,6 +68,25 @@ def summarize(session: dict) -> dict:
     }
 
 
+def check_form_health(timeout: float = 10.0):
+    """Verify the live Google Form still contains every hardcoded entry ID.
+
+    Returns (ok, missing_ids). The entry IDs are baked into the published
+    form's HTML, so if DWR ever replaces the form, prefilling would silently
+    stop working — this check makes that visible (run from the owner's
+    sidebar tool in the app).
+    """
+    import urllib.request
+    try:
+        req = urllib.request.Request(FORM_BASE, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return False, [f"form unreachable: {exc}"]
+    missing = [name for name, eid in ENTRY.items() if eid not in page]
+    return (not missing), missing
+
+
 def prefilled_url(session: dict) -> str:
     """Return a pre-filled Google Form URL for this session's striper report."""
     r = summarize(session)

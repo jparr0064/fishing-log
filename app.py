@@ -8,6 +8,7 @@ delegates data work to database / data_entry / search / analytics / map_view.
 from __future__ import annotations
 
 import calendar as _cal
+import html as _html
 import os
 from datetime import date, datetime
 
@@ -18,7 +19,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from fishing_log import (
-    analytics, data_entry, database as db, dwr_report, map_view, search,
+    analytics, backup_io, data_entry, database as db, dwr_report, map_view, search,
 )
 
 # Optional GPS button component; app still works if it isn't installed.
@@ -31,7 +32,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-19.1"
+APP_BUILD = "2026-07-22.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -341,6 +342,8 @@ def _bootstrap():
 
     Also applies idempotent schema upgrades (guarded with IF NOT EXISTS, so
     they are safe to run on every startup and are no-ops once applied).
+    Returns an error string if an upgrade failed (surfaced to the owner in
+    the sidebar), else None — a failure must never be silently swallowed.
     """
     import os
     if "database_url" in st.secrets:
@@ -352,11 +355,13 @@ def _bootstrap():
             conn.execute(text(
                 "ALTER TABLE spots ADD COLUMN IF NOT EXISTS fish_count integer"
             ))
-    except Exception:
-        # Never block startup on a migration hiccup — the app still works
-        # for everything except saving per-spot counts.
-        pass
-    return True
+    except Exception as exc:
+        # Don't block startup — the app still works for everything except
+        # the migrated feature — but LOG it and tell the owner.
+        msg = f"Schema upgrade failed at startup: {exc}"
+        print(f"[bootstrap] {msg}")
+        return msg
+    return None
 
 
 def _cache_ver() -> int:
@@ -395,6 +400,11 @@ def _cached_overall_stats(user_email, cache_ver=0):
 @st.cache_data(ttl=300)
 def _cached_last_spot(user_email, cache_ver=0):
     return search.last_spot()
+
+
+@st.cache_data(ttl=300)
+def _cached_locations(user_email, cache_ver=0):
+    return search.distinct_locations()
 
 
 @st.cache_data
@@ -524,7 +534,7 @@ def page_dashboard():
                 st.markdown(f"**{r.date}** · {r.location_name}")
                 st.markdown(
                     f"<span class='trip-meta'>{int(r.total_fish)} fish{big_txt}<br>"
-                    f"{r.species_list or 'skunked'}</span>",
+                    f"{_html.escape(r.species_list) if r.species_list else 'skunked'}</span>",
                     unsafe_allow_html=True,
                 )
 
@@ -930,7 +940,7 @@ def page_log_session():
             n_spots = len(st.session_state.get("spots", []))
             st.caption(
                 f"📍 {n_spots} spot(s) set on the map above"
-                + ("" if n_spots else f" — defaults to {DEFAULT_LOCATION}")
+                + ("" if n_spots else " — none set, so this trip won't get a map pin")
             )
         with col3:
             weather = st.selectbox("Weather", data_entry.WEATHER_OPTIONS, index=weather_idx)
@@ -986,10 +996,10 @@ def page_log_session():
 
     if submitted:
         fish = _fish_from_editor(catch_editor)
-        # Spots from the map; fall back to the home lake if none were dropped.
-        spots = list(st.session_state.get("spots", [])) or [
-            {"lat": DEFAULT_LAT, "lon": DEFAULT_LON}
-        ]
+        # Spots from the map. No fallback: a trip with no spot saves with no
+        # coordinates rather than inventing a pin at the lake default (which
+        # fabricated a fishing location and distorted the Map page).
+        spots = list(st.session_state.get("spots", []))
         # A typed new value wins; otherwise use the chosen dropdown value.
         bait_lure = new_bait.strip() or bait_choice
         fishing_style = new_style.strip() or fishing_style
@@ -1033,8 +1043,11 @@ def page_log_session():
 
 
 def _filter_controls(key_prefix: str):
-    """Shared date/location/species filter widgets. Returns the filter values."""
-    locations = ["", DEFAULT_LOCATION]
+    """Shared date/location/species filter widgets. Returns the filter values.
+
+    Locations come from the user's actual data (was hardcoded to the lake
+    name, which matched nothing when trips used names like "SML — …")."""
+    locations = [""] + _cached_locations(db.get_current_user(), _cache_ver())
     species_opts = [""] + SPECIES
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -1069,7 +1082,8 @@ def _trip_card(r):
         cinfo.markdown(f"**{r.date}** · {r.location_name}")
         cinfo.markdown(
             f"<span class='trip-meta'>{int(r.total_fish)} fish{big_txt}<br>"
-            f"{r.species_list or 'skunked'}<br>{cond}</span>",
+            f"{_html.escape(r.species_list) if r.species_list else 'skunked'}<br>"
+            f"{_html.escape(cond)}</span>",
             unsafe_allow_html=True,
         )
         label = "✓ Viewing" if selected else "View details →"
@@ -1226,12 +1240,31 @@ def _render_session_detail(detail: dict, sid: int):
                   use_container_width=True, returned_objects=[], key=f"route_{sid}")
 
     if not _is_demo():
-        if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
-            data_entry.delete_session(sid)
-            _refresh()
-            st.session_state.pop("browse_sel", None)
-            st.success("Session deleted.")
-            st.rerun()
+        # Two-step delete: the first click only arms a confirmation row —
+        # deleting a trip is irreversible, so it must never be one click.
+        arm_key = f"del_arm_{sid}"
+        if not st.session_state.get(arm_key):
+            if st.button("🗑️ Delete this session", type="secondary", key=f"del_{sid}"):
+                st.session_state[arm_key] = True
+                st.rerun()
+        else:
+            st.warning(
+                f"Delete the **{detail['date']}** trip at "
+                f"**{detail['location_name']}**? This can't be undone — the trip, "
+                "its fish, and its route are removed permanently.",
+                icon="⚠️",
+            )
+            c_yes, c_no = st.columns([1, 1])
+            if c_yes.button("Yes — delete permanently", type="primary", key=f"del_yes_{sid}"):
+                data_entry.delete_session(sid)
+                _refresh()
+                st.session_state.pop(arm_key, None)
+                st.session_state.pop("browse_sel", None)
+                st.success("Session deleted.")
+                st.rerun()
+            if c_no.button("Cancel", key=f"del_no_{sid}"):
+                st.session_state.pop(arm_key, None)
+                st.rerun()
 
 
 def _edit_form(detail: dict):
@@ -1362,12 +1395,18 @@ def _render_whats_working():
     """Condition insights: which water temp, weather, time, style, bait produce."""
     bests = analytics.best_conditions(min_sessions=2)
     if bests:
-        st.markdown("**Your most productive conditions** — ranked by fish per hour")
+        st.markdown("**Your most productive conditions** — ranked by fish per hour "
+                    "(only categories with 2+ trips qualify)")
         cols = st.columns(len(bests))
-        for col, (dim, label, fph) in zip(cols, bests):
+        for col, (dim, label, fph, n) in zip(cols, bests):
             col.metric(dim, label, f"{fph} fish/hr")
+            col.caption(
+                f"🌱 Early signal — {n} trips" if n < analytics.ESTABLISHED_SESSIONS
+                else f"✅ Established — {n} trips"
+            )
     else:
-        st.caption("Log a few more trips (with conditions filled in) to surface patterns.")
+        st.caption("Not enough repeat data yet — a condition needs at least two "
+                   "trips (with hours recorded) before it can rank here. Keep logging!")
 
     sections = [
         ("Water temperature", analytics.by_water_temp(), "water_band"),
@@ -1552,38 +1591,77 @@ def page_map():
 
 
 def page_backup():
-    st.header("💾 Export")
+    st.header("💾 Backup & Export")
+
+    n_sessions = db.session_count()
+
+    # --- Full backup (the real thing) ---
     st.markdown(
-        "Download your data anytime as CSV files — open them in Excel or Google Sheets. "
-        "These files are also your backup, so save them somewhere safe periodically."
+        "**Full backup** — one ZIP with everything: `sessions.csv`, `fish.csv` "
+        "(kept/released + record IDs), `spots.csv` (route order, coordinates, "
+        "caught, fish counts), and a restorable `backup.json`."
     )
-
-    sessions_df = search.list_sessions()
-    fish_df = search.fish_export()
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Sessions** — one row per trip")
-        st.caption("Date, location, weather, conditions, hours fished, bait, style, notes.")
+    if n_sessions:
         st.download_button(
-            "⬇ Download Sessions CSV",
-            sessions_df.to_csv(index=False).encode("utf-8"),
-            file_name="fishing_sessions.csv",
-            mime="text/csv",
-            disabled=sessions_df.empty,
-            use_container_width=True,
+            "⬇️ Download full backup (ZIP)",
+            data=backup_io.build_zip_bytes(),
+            file_name=f"fishing_log_backup_{date.today().isoformat()}.zip",
+            mime="application/zip",
+            type="primary",
         )
-    with c2:
-        st.markdown("**Fish** — one row per fish caught")
-        st.caption("Species, length, weight, depth, kept/released — linked to each session.")
-        st.download_button(
-            "⬇ Download Fish CSV",
-            fish_df.to_csv(index=False).encode("utf-8"),
-            file_name="fishing_fish.csv",
-            mime="text/csv",
-            disabled=fish_df.empty,
-            use_container_width=True,
-        )
+        st.caption("Grab one every month or so and keep it somewhere safe.")
+    else:
+        st.caption("No trips yet — nothing to back up.")
+
+    # --- Spreadsheet-friendly singles ---
+    with st.expander("Individual CSVs (for Excel / Google Sheets)"):
+        sessions_df = search.list_sessions()
+        fish_df = search.fish_export()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Sessions** — one row per trip")
+            st.download_button(
+                "⬇ Sessions CSV",
+                sessions_df.to_csv(index=False).encode("utf-8"),
+                file_name="fishing_sessions.csv", mime="text/csv",
+                disabled=sessions_df.empty, use_container_width=True,
+            )
+        with c2:
+            st.markdown("**Fish** — one row per fish caught")
+            st.download_button(
+                "⬇ Fish CSV",
+                fish_df.to_csv(index=False).encode("utf-8"),
+                file_name="fishing_fish.csv", mime="text/csv",
+                disabled=fish_df.empty, use_container_width=True,
+            )
+
+    # --- Restore ---
+    st.divider()
+    st.markdown("**Restore from backup**")
+    if _is_demo():
+        st.caption("🔒 Restore is disabled in the demo.")
+        return
+    st.caption(
+        "Upload a backup ZIP (or just its backup.json) to load those trips back "
+        "into your account. Trips that already exist (same date, start time, and "
+        "location) are skipped unless you say otherwise."
+    )
+    up = st.file_uploader("Backup file", type=["zip", "json"], key="restore_file")
+    skip_dupes = st.checkbox("Skip trips I already have (recommended)", value=True)
+    if up is not None and st.button("↩️ Restore trips", type="primary"):
+        try:
+            data = backup_io.parse_backup(up.getvalue())
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            result = backup_io.restore_backup(data, skip_duplicates=skip_dupes)
+            _refresh()
+            st.success(
+                f"Restore complete — **{result['restored']} trip(s) restored**, "
+                f"{result['skipped']} skipped as duplicates."
+            )
+            for msg in result["errors"]:
+                st.warning(msg)
 
 
 _MOON_EMOJI = {
@@ -1666,7 +1744,7 @@ def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> 
                         rows += f'<div class="trip-fish">🐟 {s["total_fish"]} fish</div>'
                     else:
                         rows += '<div class="trip-sk">🦨 skunked</div>'
-                    rows += f'<div class="trip-loc">{s["location"]}</div>'
+                    rows += f'<div class="trip-loc">{_html.escape(s["location"])}</div>'
             rows += "</td>"
         rows += "</tr>"
     legend = (
@@ -1758,16 +1836,30 @@ def page_calendar():
 # --------------------------------------------------------------------------
 
 def main():
-    _bootstrap()
+    boot_err = _bootstrap()
     user_email = _get_user_email()   # shows login screen if not signed in
     db.set_current_user(user_email)  # all DB calls in this run are scoped to this user
 
     # Demo admin: let the dev account edit demo data directly via a sidebar toggle.
     dev_email = st.secrets.get("dev_user_email", "")
     if user_email == dev_email:
+        if boot_err:
+            st.sidebar.warning(f"⚠️ {boot_err}", icon="⚠️")
         demo_admin = st.sidebar.toggle("🛠 Edit demo data", key="demo_admin_toggle")
         if demo_admin:
             db.set_current_user(DEMO_EMAIL)
+        with st.sidebar.expander("🩺 DWR form health check"):
+            st.caption("Fetches the DWR Google Form and verifies every hardcoded "
+                       "entry ID still exists — run after any DWR form change.")
+            if st.button("Run check", key="dwr_health_btn"):
+                ok, missing = dwr_report.check_form_health()
+                if ok:
+                    st.success("All DWR form field IDs found — prefill is healthy.")
+                else:
+                    st.error("DWR form check failed — missing: "
+                             + ", ".join(missing)
+                             + ". The pre-filled report may no longer work; "
+                               "re-read the form's entry IDs.")
     else:
         st.session_state.pop("demo_admin_toggle", None)
 
@@ -1814,16 +1906,14 @@ def main():
             with st.sidebar.expander("⚠️ Clear my data"):
                 st.caption("Deletes ALL your sessions and fish records. Cannot be undone, "
                            "and there is no server-side backup — **download your data first.**")
-                # Export-first gate: user must grab a CSV backup before the
-                # delete button unlocks.
-                sessions_csv = _cached_sessions(
-                    db.get_current_user(), None, None, None, None, cache_ver=_cache_ver()
-                ).to_csv(index=False).encode("utf-8")
+                # Export-first gate: user must grab a FULL backup (ZIP with
+                # sessions + fish + spots + restorable JSON — not just a
+                # sessions CSV) before the delete button unlocks.
                 got_backup = st.download_button(
-                    "⬇️ Step 1 — Download my data (CSV)",
-                    data=sessions_csv,
-                    file_name="fishing_log_backup.csv",
-                    mime="text/csv",
+                    "⬇️ Step 1 — Download full backup (ZIP)",
+                    data=backup_io.build_zip_bytes(),
+                    file_name=f"fishing_log_backup_{date.today().isoformat()}.zip",
+                    mime="application/zip",
                 )
                 if got_backup:
                     st.session_state["_clear_backup_downloaded"] = True

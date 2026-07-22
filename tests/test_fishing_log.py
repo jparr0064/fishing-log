@@ -448,7 +448,45 @@ def test_condition_insights():
 
     assert not analytics.by_fishing_style().empty
     bests = analytics.best_conditions(min_sessions=1)
-    assert any(fph > 0 for _, _, fph in bests)
+    assert any(fph > 0 for _, _, fph, _ in bests)
+
+
+def test_best_conditions_no_single_trip_fallback():
+    """With only one trip per category, min_sessions=2 must return NOTHING —
+    no silent fallback that crowns a winner from a single lucky outing."""
+    data_entry.add_session(
+        {"date": "2026-06-01", "location_name": "SML", "water_temp": 62,
+         "fishing_style": "Downlines", "start_time": "06:00", "hours_fished": 4},
+        [{"species": "Striper", "length": 30, "weight": 8}],
+    )
+    assert analytics.best_conditions(min_sessions=2) == []
+    # And with two qualifying trips, the category ranks (and reports its n).
+    data_entry.add_session(
+        {"date": "2026-06-08", "location_name": "SML", "water_temp": 63,
+         "fishing_style": "Downlines", "start_time": "06:30", "hours_fished": 4},
+        [{"species": "Striper", "length": 24, "weight": 5}],
+    )
+    bests = analytics.best_conditions(min_sessions=2)
+    assert bests and all(n >= 2 for _, _, _, n in bests)
+
+
+def test_fish_per_hour_excludes_unhoured_sessions():
+    """A trip with fish but NO recorded hours must not inflate fish/hr."""
+    data_entry.add_session(
+        {"date": "2026-06-01", "location_name": "SML", "weather": "Sunny",
+         "hours_fished": 5},
+        [{"species": "Striper", "count": 5}],
+    )
+    # Same weather, 10 fish, but no times/hours recorded at all.
+    data_entry.add_session(
+        {"date": "2026-06-08", "location_name": "SML", "weather": "Sunny"},
+        [{"species": "Striper", "count": 10}],
+    )
+    row = analytics.by_weather().set_index("weather").loc["Sunny"]
+    # Old buggy math: (5+10)/5 = 3.0. Correct: only the timed trip counts → 1.0.
+    assert row["fish_per_hour"] == 1.0
+    # The untimed trip still counts everywhere else.
+    assert int(row["sessions"]) == 2 and int(row["total_fish"]) == 15
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +572,151 @@ def test_map_success_tiers():
     assert map_view._tier(6)[0] == "Great"
     assert map_view._tier(7)[0] == "Blowout"
     assert map_view._tier(25)[0] == "Blowout"
+
+
+# ---------------------------------------------------------------------------
+# Saving without spots (no fabricated coordinates)
+# ---------------------------------------------------------------------------
+
+def test_no_spots_saves_null_coords():
+    """A trip saved without dropping a spot stores NO coordinates and NO spot
+    row — the app must never invent a pin at the lake default."""
+    sid = data_entry.add_session({"date": "2026-07-01", "location_name": "SML"}, [])
+    d = search.get_session(sid)
+    assert d["latitude"] is None and d["longitude"] is None
+    assert d["spots"] == []
+    # And the Map page simply doesn't show it (no fabricated marker).
+    assert search.map_rows().empty
+
+
+# ---------------------------------------------------------------------------
+# Validation bounds
+# ---------------------------------------------------------------------------
+
+def test_numeric_bounds_rejected():
+    base = {"date": "2026-07-01", "location_name": "SML"}
+    with pytest.raises(data_entry.ValidationError):   # absurd length
+        data_entry.add_session(base, [{"species": "Striper", "length": 300, "weight": 5}])
+    with pytest.raises(data_entry.ValidationError):   # absurd weight
+        data_entry.add_session(base, [{"species": "Striper", "length": 30, "weight": 900}])
+    with pytest.raises(data_entry.ValidationError):   # absurd depth
+        data_entry.add_session(base, [{"species": "Striper", "length": 30, "weight": 5, "depth": 5000}])
+    with pytest.raises(data_entry.ValidationError):   # absurd water temp
+        data_entry.add_session({**base, "water_temp": 500}, [])
+    with pytest.raises(data_entry.ValidationError):   # > 24 h in a day
+        data_entry.add_session({**base, "hours_fished": 30}, [])
+    with pytest.raises(data_entry.ValidationError):   # a flotilla, not a boat
+        data_entry.add_session({**base, "num_anglers": 50}, [])
+    # Sane values at the high end still pass.
+    sid = data_entry.add_session(
+        {**base, "water_temp": 88, "hours_fished": 12, "num_anglers": 6},
+        [{"species": "Striper", "length": 45, "weight": 40, "depth": 60}],
+    )
+    assert search.get_session(sid)["total_fish"] == 1
+
+
+# ---------------------------------------------------------------------------
+# HTML escaping (stored-XSS hardening)
+# ---------------------------------------------------------------------------
+
+def test_map_popup_escapes_user_text():
+    sid = data_entry.add_session(
+        {"date": "2026-07-01", "location_name": "<script>alert(1)</script>",
+         "bait_lure": "<img src=x onerror=alert(2)>"},
+        [{"species": "Striper", "length": 20, "weight": 4}],
+        [{"lat": 37.1, "lon": -79.7}],
+    )
+    assert sid
+    rows = search.map_rows()
+    html = map_view.build_map(rows)._repr_html_()
+    assert "<script>alert(1)</script>" not in html
+    assert "<img src=x onerror" not in html
+
+
+# ---------------------------------------------------------------------------
+# Backup & restore round-trip
+# ---------------------------------------------------------------------------
+
+def _seed_backup_fixture():
+    from fishing_log import data_entry as de
+    de.add_session(
+        {"date": "2026-06-01", "start_time": "06:00", "end_time": "10:00",
+         "location_name": "SML — Main Channel", "weather": "Sunny",
+         "air_temp": 70, "water_temp": 68, "bait_lure": "Live Shad",
+         "fishing_style": "Downlines", "num_anglers": 2, "dwr_filed": 1,
+         "notes": "great morning"},
+        [{"species": "Striper", "length": 28, "weight": 9, "kept": True, "depth": 22},
+         {"species": "Striper", "length": 20, "weight": 4, "kept": False, "depth": 18}],
+        [{"lat": 37.16, "lon": -79.70, "fish_count": 2},
+         {"lat": 37.17, "lon": -79.71, "fish_count": 0}],
+    )
+    de.add_session(
+        {"date": "2026-06-08", "location_name": "SML — Roanoke Arm"}, [], [],
+    )
+
+
+def test_backup_zip_contents():
+    from fishing_log import backup_io
+    _seed_backup_fixture()
+    import io, json, zipfile
+    raw = backup_io.build_zip_bytes()
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        names = set(zf.namelist())
+        assert {"sessions.csv", "fish.csv", "spots.csv", "backup.json"} <= names
+        fish_csv = zf.read("fish.csv").decode()
+        assert "kept" in fish_csv.splitlines()[0] and "fish_id" in fish_csv.splitlines()[0]
+        spots_csv = zf.read("spots.csv").decode()
+        assert "route_order" in spots_csv.splitlines()[0]
+        data = json.loads(zf.read("backup.json"))
+    assert data["format"] == "fishing-log-backup"
+    assert data["session_count"] == 2 and data["fish_count"] == 2
+
+
+def test_backup_restore_roundtrip():
+    """Backup → wipe → restore must reproduce trips, fish, spots, and DWR flag."""
+    from fishing_log import backup_io
+    _seed_backup_fixture()
+    raw = backup_io.build_zip_bytes()
+
+    assert db.delete_all_sessions() == 2
+    assert db.session_count() == 0
+
+    data = backup_io.parse_backup(raw)          # accepts the whole ZIP
+    result = backup_io.restore_backup(data)
+    assert result["restored"] == 2 and result["skipped"] == 0 and not result["errors"]
+
+    df = search.list_sessions()
+    assert len(df) == 2
+    full = search.get_session(int(df[df["date"] == "2026-06-01"].iloc[0]["id"]))
+    assert full["total_fish"] == 2
+    kept = [f for f in full["fish"] if f["kept"]]
+    assert len(kept) == 1 and kept[0]["length"] == 28 and kept[0]["depth"] == 22
+    assert len(full["spots"]) == 2
+    assert full["spots"][0]["fish_count"] == 2 and bool(full["spots"][0]["caught"])
+    assert full["dwr_filed"] == 1
+    assert full["latitude"] == 37.16 and full["longitude"] == -79.7
+
+
+def test_restore_skips_duplicates():
+    from fishing_log import backup_io
+    _seed_backup_fixture()
+    data = backup_io.parse_backup(backup_io.build_zip_bytes())
+    # Restoring on top of the same data: everything is a duplicate.
+    result = backup_io.restore_backup(data, skip_duplicates=True)
+    assert result["restored"] == 0 and result["skipped"] == 2
+    assert db.session_count() == 2
+    # With the guard off, they import as extra copies.
+    result = backup_io.restore_backup(data, skip_duplicates=False)
+    assert result["restored"] == 2
+    assert db.session_count() == 4
+
+
+def test_parse_backup_rejects_garbage():
+    from fishing_log import backup_io
+    with pytest.raises(ValueError):
+        backup_io.parse_backup(b"not a backup at all")
+    with pytest.raises(ValueError):
+        backup_io.parse_backup(b'{"format": "something-else", "sessions": []}')
 
 
 # ---------------------------------------------------------------------------

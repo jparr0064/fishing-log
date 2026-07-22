@@ -57,7 +57,7 @@ def B(text):
 banner = Table(
     [[Paragraph("Fishing Log — User Guide", title_style)],
      [Paragraph("Smith Mountain Lake &nbsp;·&nbsp; A Private Fishing Log for Our Crew", subtitle_style)],
-     [Paragraph("Version 2.0 &nbsp;·&nbsp; Created by John Parrent", ParagraphStyle(
+     [Paragraph("Version 2.1 &nbsp;·&nbsp; Created by John Parrent", ParagraphStyle(
          "GuideVer", parent=subtitle_style, fontSize=9.5, spaceBefore=4))]],
     colWidths=[6.8 * inch],
 )
@@ -108,7 +108,8 @@ story.append(Paragraph(
 story.append(Paragraph("Set your spot(s) on the map", h2))
 B("Click the map to drop your starting pin. Click again to add each spot along your troll.")
 B("The map opens centered on the water you fished <b>last trip</b> — handy if you pound the same spots.")
-B("Check the box under a spot to mark where a fish was actually caught (shows a fish icon on the map).")
+B("Under the map, enter how many fish you caught at each spot (0 = none). Spots with fish "
+  "show a fish icon on the map, with an ×N badge when you caught several there.")
 B("Use the <b>Last</b> button to undo the most recent pin or <b>Clear</b> to start over.")
 story.append(Paragraph("Tracking your trolling route", h2))
 story.append(Paragraph(
@@ -116,7 +117,7 @@ story.append(Paragraph(
     "each point along your troll. Later, when you open that trip in Browse &amp; Search, "
     "you'll see your whole route drawn out: the pins are numbered in the order you dropped "
     "them, a line with arrows shows the direction you trolled, and a fish icon marks every "
-    "spot where you checked the \"fish caught here\" box.", body))
+    "spot where you entered a fish count.", body))
 story.append(Paragraph(
     "Not trolling? Multiple pins still work great — drop one on each hole you fished that day.", body))
 story.append(Paragraph(
@@ -209,12 +210,17 @@ B("Each trip appears as one pin — specifically the FIRST pin you dropped when 
   "(your full trolling route lives in the trip's detail under Browse &amp; Search).")
 B("The same date/location/species filters apply, and there's a full-screen toggle.")
 
-# ---- Export ----
-story.append(Paragraph("8. Export (your backup)", h1))
+# ---- Backup & Export ----
+story.append(Paragraph("8. Backup &amp; Export", h1))
 story.append(Paragraph(
-    "The Export page downloads your data as CSV files that open in Excel or Google Sheets: "
-    "<b>Sessions</b> (one row per trip) and <b>Fish</b> (one row per fish). These files are also "
-    "your personal backup — grab a copy every month or so and stash it somewhere safe.", body))
+    "The <b>Backup &amp; Export</b> page downloads a single ZIP with EVERYTHING: your trips, "
+    "every fish (with kept/released), and your map spots and routes — plus a backup.json file "
+    "the app can restore from. Grab one every month or so and stash it somewhere safe.", body))
+B("<b>Download full backup (ZIP)</b> — the one button that backs up everything.")
+B("<b>Restore from backup</b> — upload a backup ZIP and the app loads those trips back into "
+  "your account. Trips you already have are skipped automatically.")
+B("Prefer spreadsheets? The individual Sessions and Fish CSVs are still there under "
+  "\"Individual CSVs\" — handy for Excel, but the ZIP is the real backup.")
 
 # ---- Phone ----
 story.append(Paragraph("9. Using it on your phone", h1))
@@ -231,13 +237,16 @@ B("The computer is still the best place for map-heavy work like setting trolling
 # ---- FAQ ----
 story.append(Paragraph("10. Quick answers", h1))
 faq = [
-    ("Is my data private?", "Yes. Trips are tied to your email — each member sees only their own log."),
+    ("Is my data private?", "Trips are tied to your email, and the app only ever shows you your "
+     "own log — no other member can see it. (As with any shared cloud database, John, as the "
+     "administrator, can access the database when maintaining the app.)"),
     ("I got skunked. Do I still log it?", "Absolutely — skunked trips are data too, and the DWR wants "
      "those reports just as much. Save the session with the fish table left empty."),
     ("I made a mistake on a trip.", "Browse &amp; Search → open the trip → Edit this session (top of "
      "the detail). Fix it and Save changes."),
     ("Can I lose my data?", "It lives in a cloud database, not on your phone. For belt-and-suspenders, "
-     "download the Export CSVs now and then."),
+     "download a full backup ZIP now and then — if anything ever goes wrong, the Restore button "
+     "puts it all back."),
     ("Something looks broken.", "Note what page you were on and what you clicked, then tell John "
      "Parrent. The 'build' number at the bottom of the menu helps troubleshooting."),
     ("Have an idea to make it better?", "Tell John Parrent! The app is homegrown and always "

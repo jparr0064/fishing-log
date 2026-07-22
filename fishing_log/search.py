@@ -238,11 +238,11 @@ def calendar_month(year: int, month: int) -> dict:
 
 
 def fish_export() -> pd.DataFrame:
-    """Flat one-row-per-fish table for CSV export."""
+    """Flat one-row-per-fish table for CSV export (stable IDs + kept/released)."""
     query = text("""
-        SELECT s.id AS session_id, s.date, s.location_name, s.weather,
-               s.air_temp, s.water_temp, s.bait_lure, s.fishing_style,
-               f.species, f.length, f.weight, f.depth
+        SELECT f.id AS fish_id, s.id AS session_id, s.date, s.location_name,
+               s.weather, s.air_temp, s.water_temp, s.bait_lure, s.fishing_style,
+               f.species, f.length, f.weight, f.depth, f.kept
         FROM fish f JOIN sessions s ON s.id = f.session_id
         WHERE s.user_email = :email
         ORDER BY s.date, f.id

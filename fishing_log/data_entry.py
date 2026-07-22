@@ -36,6 +36,15 @@ class ValidationError(ValueError):
 
 WEATHER_OPTIONS = ["Sunny", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Windy", "Fog", "Snow"]
 
+# Sanity bounds for numeric fields. Generous on purpose — they exist to catch
+# obvious typos (a 300" striper, a 500° water temp), not to police real catches.
+MAX_FISH_LENGTH_IN = 80.0
+MAX_FISH_WEIGHT_LB = 150.0
+MAX_DEPTH_FT = 300.0
+MIN_TEMP_F, MAX_TEMP_F = -30.0, 130.0
+MAX_HOURS = 24.0
+MAX_ANGLERS = 20
+
 FISHING_STYLES = ["Downlines", "Jigging", "Light Lines", "Planer Boards", "Topwater", "Trolling", "Umbrella Rig"]
 
 BAIT_LURE_OPTIONS = [
@@ -101,8 +110,24 @@ def validate_session(session: dict) -> dict:
         if computed is not None:
             cleaned["hours_fished"] = computed
     if cleaned.get("hours_fished") is not None:
-        if float(cleaned["hours_fished"]) < 0:
+        hrs = float(cleaned["hours_fished"])
+        if hrs < 0:
             raise ValidationError("Hours fished cannot be negative.")
+        if hrs > MAX_HOURS:
+            raise ValidationError(f"Hours fished can't exceed {MAX_HOURS:g} (one day).")
+
+    for temp_field in ("air_temp", "water_temp"):
+        t = cleaned.get(temp_field)
+        if t not in (None, ""):
+            try:
+                t = float(t)
+            except (TypeError, ValueError):
+                raise ValidationError(f"{temp_field.replace('_', ' ').title()} must be a number.")
+            if not (MIN_TEMP_F <= t <= MAX_TEMP_F):
+                raise ValidationError(
+                    f"{temp_field.replace('_', ' ').title()} must be between "
+                    f"{MIN_TEMP_F:g}° and {MAX_TEMP_F:g}°."
+                )
 
     lat = cleaned.get("latitude")
     if lat is not None and lat != "":
@@ -120,6 +145,8 @@ def validate_session(session: dict) -> dict:
         na = int(na)
         if na < 1:
             raise ValidationError("Number of anglers must be at least 1.")
+        if na > MAX_ANGLERS:
+            raise ValidationError(f"Number of anglers can't exceed {MAX_ANGLERS}.")
         cleaned["num_anglers"] = na
 
     cleaned["dwr_filed"] = int(bool(cleaned.get("dwr_filed")))
@@ -159,11 +186,27 @@ def validate_fish(fish: List[dict]) -> List[dict]:
                 raise ValidationError(f"Length/weight for '{species}' must be numbers.")
             if length < 0 or weight < 0:
                 raise ValidationError(f"Length/weight for '{species}' cannot be negative.")
+            if length > MAX_FISH_LENGTH_IN:
+                raise ValidationError(
+                    f"Length for '{species}' can't exceed {MAX_FISH_LENGTH_IN:g}\" — "
+                    "check for a typo.")
+            if weight > MAX_FISH_WEIGHT_LB:
+                raise ValidationError(
+                    f"Weight for '{species}' can't exceed {MAX_FISH_WEIGHT_LB:g} lb — "
+                    "check for a typo.")
             depth = item.get("depth")
+            depth = float(depth) if depth else None
+            if depth is not None:
+                if depth < 0:
+                    raise ValidationError(f"Depth for '{species}' cannot be negative.")
+                if depth > MAX_DEPTH_FT:
+                    raise ValidationError(
+                        f"Depth for '{species}' can't exceed {MAX_DEPTH_FT:g} ft — "
+                        "check for a typo.")
             cleaned.append({
                 "species": species, "length": length, "weight": weight,
                 "kept": bool(item.get("kept")),
-                "depth": float(depth) if depth else None,
+                "depth": depth,
             })
     return cleaned
 

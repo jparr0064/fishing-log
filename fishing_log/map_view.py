@@ -40,15 +40,18 @@ def _tier(total_fish: int) -> Tuple[str, str]:
 
 
 def _popup_html(row: pd.Series) -> str:
+    """Popup body. User-entered text is escaped — it lands in raw Leaflet HTML."""
+    from html import escape
+
     species = row.get("species_list") or "No fish recorded"
     return (
-        f"<b>{row.get('location_name', 'Unknown')}</b><br>"
+        f"<b>{escape(str(row.get('location_name', 'Unknown')))}</b><br>"
         f"<b>Date:</b> {row.get('date', '')}<br>"
         f"<b>Fish:</b> {int(row.get('total_fish', 0))}<br>"
-        f"<b>Species:</b> {species}<br>"
-        f"<b>Weather:</b> {row.get('weather', '') or 'n/a'}<br>"
+        f"<b>Species:</b> {escape(str(species))}<br>"
+        f"<b>Weather:</b> {escape(str(row.get('weather', '') or 'n/a'))}<br>"
         f"<b>Air/Water:</b> {row.get('air_temp', 'n/a')}&deg; / {row.get('water_temp', 'n/a')}&deg;<br>"
-        f"<b>Bait/Lure:</b> {row.get('bait_lure', '') or 'n/a'}"
+        f"<b>Bait/Lure:</b> {escape(str(row.get('bait_lure', '') or 'n/a'))}"
     )
 
 

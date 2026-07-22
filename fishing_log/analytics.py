@@ -58,23 +58,35 @@ def _session_frame() -> pd.DataFrame:
 
 
 def _summarize(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
-    """Common success/productivity metrics grouped by ``group_col``."""
+    """Common success/productivity metrics grouped by ``group_col``.
+
+    fish_per_hour only counts sessions that RECORDED hours — a trip with fish
+    but no hours used to add its fish to the numerator while contributing
+    nothing to the denominator, inflating the rate.
+    """
+    df = df.copy()
+    timed = df["hours_fished"].notna() & (df["hours_fished"] > 0)
+    df["_timed_fish"] = df["total_fish"].where(timed, 0)
+    df["_timed_hours"] = df["hours_fished"].where(timed, 0.0)
+
     grouped = df.groupby(group_col, dropna=False)
     out = grouped.agg(
         sessions=("id", "count"),
         sessions_with_fish=("caught", "sum"),
         total_fish=("total_fish", "sum"),
         total_hours=("hours_fished", "sum"),
+        _timed_fish=("_timed_fish", "sum"),
+        _timed_hours=("_timed_hours", "sum"),
     ).reset_index()
 
     out["success_rate_%"] = (out["sessions_with_fish"] / out["sessions"] * 100).round(1)
     out["avg_fish_per_session"] = (out["total_fish"] / out["sessions"]).round(2)
     out["fish_per_hour"] = out.apply(
-        lambda r: round(r["total_fish"] / r["total_hours"], 2) if r["total_hours"] else 0.0,
+        lambda r: round(r["_timed_fish"] / r["_timed_hours"], 2) if r["_timed_hours"] else 0.0,
         axis=1,
     )
     out["sessions_with_fish"] = out["sessions_with_fish"].astype(int)
-    return out
+    return out.drop(columns=["_timed_fish", "_timed_hours"])
 
 
 def by_time_of_year(period: str = "month") -> pd.DataFrame:
@@ -220,11 +232,18 @@ def by_bait() -> pd.DataFrame:
     return out.sort_values("fish_per_hour", ascending=False).reset_index(drop=True)
 
 
+# A category with at least this many trips reads as an established pattern
+# (fewer shows as an "early signal" in the UI).
+ESTABLISHED_SESSIONS = 3
+
+
 def best_conditions(min_sessions: int = 2) -> list:
     """Top-performing category in each dimension by fish/hour (needs >= min trips).
 
-    Returns a list of (dimension, label, fish_per_hour). Categories with too few
-    trips are ignored so a single lucky outing doesn't dominate.
+    Returns a list of (dimension, label, fish_per_hour, sessions). Categories
+    with fewer than ``min_sessions`` trips are EXCLUDED — there is no fallback
+    to thinner data, so a single lucky outing can never be crowned a "most
+    productive condition".
     """
     dims = [
         ("Water temp", by_water_temp(), "water_band"),
@@ -237,16 +256,14 @@ def best_conditions(min_sessions: int = 2) -> list:
     for name, tbl, col in dims:
         if tbl.empty:
             continue
-        eligible = tbl[tbl["sessions"] >= min_sessions]
-        pool = eligible if not eligible.empty else tbl
-        pool = pool[pool["fish_per_hour"] > 0]
+        pool = tbl[(tbl["sessions"] >= min_sessions) & (tbl["fish_per_hour"] > 0)]
         if pool.empty:
             continue
         top = pool.loc[pool["fish_per_hour"].idxmax()]
         label = top[col]
         if label in (None, "Unknown") or pd.isna(label):
             continue
-        results.append((name, str(label), float(top["fish_per_hour"])))
+        results.append((name, str(label), float(top["fish_per_hour"]), int(top["sessions"])))
     return results
 
 
