@@ -30,20 +30,35 @@ silently unscope the write. This was fixed; keep it in `st.session_state`.
 
 ## Environment & commands
 
-This machine has **no `python` on PATH** (only the Windows Store stub). Always use
-the venv interpreter directly:
+The project lives at `C:\CLAUDE Files\Fish APP` on the desktop **desktop-oinripa**.
+Python **3.12** is installed system-wide and *is* on PATH (installed 2026-07-25 while
+setting this machine up). Still prefer the venv interpreter directly for anything
+project-related:
 
-- Run app: `.venv/Scripts/streamlit.exe run app.py --server.port 8765` (the desktop
-  **Fishing Log** shortcut → `Fishing Log.bat` does this). Pinned to **port 8765**.
+> **Moved-machine gotcha (2026-07-25):** this project was copied over from an older
+> computer where it lived at `C:\CLAUDE\Fish APP` — note the missing "Files". A
+> Windows venv is **not relocatable**: the console shims in `.venv\Scripts\*.exe`
+> (including `streamlit.exe`) hardcode the absolute path of the interpreter that
+> created them, so they break silently after a move. `.venv\Scripts\python.exe`
+> itself still works. **Always invoke tools as `python.exe -m <tool>`, never via the
+> `.exe` shim.** If a venv is beyond repair, rebuild it rather than trying to patch
+> the paths.
+
+- Run app: `.venv\Scripts\python.exe -m streamlit run app.py --server.port 8765`
+  (the desktop **Fishing Log** shortcut → `Fishing Log.bat` does this, and rebuilds
+  the venv first if it is missing or broken). Pinned to **port 8765**.
 - All tests: `.venv/Scripts/python.exe -m pytest tests -q`
 - Single test: `.venv/Scripts/python.exe -m pytest tests/test_fishing_log.py::test_write_scoping -q`
 - Compile-check: `.venv/Scripts/python.exe -m py_compile app.py`
 - First-time setup: `python -m venv .venv && .venv/Scripts/python.exe -m pip install -r requirements.txt pytest`
 
-**Streamlit version:** `requirements.txt` pins `streamlit==1.42.0` (what Streamlit
-Cloud installs; native auth `st.login`/`st.user` landed in 1.42.0). The local
-`.venv` has drifted to a newer version — usually harmless, but if something
-"works locally, breaks on Cloud," suspect the gap.
+**Streamlit version:** `requirements.txt` pins `streamlit==1.42.2` (what Streamlit
+Cloud installs). Note 1.42 exposes the signed-in identity as `st.experimental_user`,
+not `st.user` — the rename landed in 1.44, hence the `_st_user()` shim in `app.py`.
+`Authlib` is pinned to **1.6.5**; 1.6.6 breaks the OIDC callback (streamlit#13461).
+The local `.venv` was rebuilt from `requirements.txt` on 2026-07-25, so local and
+Cloud currently match — if that drifts and something "works locally, breaks on
+Cloud," suspect the gap.
 
 **Secrets** (`.streamlit/secrets.toml`, git-ignored — never commit):
 - `database_url` — Supabase Postgres connection string (SQLAlchemy/psycopg2 URL).
@@ -53,10 +68,11 @@ Cloud installs; native auth `st.login`/`st.user` landed in 1.42.0). The local
 - `[auth]` + `[auth.google]` — **optional**; present them to enable Google OIDC
   (see Auth below). Absent locally → the app falls back to a plain email form.
 
-**Sibling app / port collisions:** a separate **Wardrobe** app at `C:\Codex\Fashion`
-(own venv, pinned to **port 8766**). Both default to Streamlit's 8501, which
-previously caused the fishing app's browser tab to open the wardrobe app. Each
-launcher pins its own port — keep it that way.
+**Port pinning:** keep this app pinned to **port 8765**. A retired **Wardrobe**
+app (`C:\CLAUDE Files\Fashion`, port 8766) used to sit alongside it; both defaulted
+to Streamlit's 8501, which once caused this app's browser tab to open the wardrobe
+app instead. As of 2026-07-25 the Wardrobe app is **not in use** and its folder is
+not maintained — but keep the explicit port flag regardless.
 
 **Shell note:** use the **Bash tool** for `python -c "..."` one-liners and `curl` —
 PowerShell mangles embedded quotes and PowerShell 5.1 lacks `?:`/`&&`. PowerShell is
@@ -167,11 +183,16 @@ The app runs on Postgres but tests use in-memory SQLite, so **keep SQL portable*
 Dashboard (KPIs, personal bests, DWR-unfiled nudge, recent trips) · Log a Session
 (spot picker, per-fish editor with Kept?) · Browse & Search (trip **cards** + full
 detail with route map, DWR report + filed toggle, edit, delete)
+
 ## Related projects (don't blend)
 
-- `C:\Codex\Anglers Ledger` — **The Angler's Ledger**, a separate single-file HTML fishing log sold on Etsy. No shared code; it was inspired by this app ("ported from the Python app" comments refer to this codebase). Feature ideas may flow both ways (Records to Beat, species badges, per-species PB metric are candidates to port INTO this Streamlit app), but the two products deploy and evolve independently.
-- `C:\Codex\YouTube` — YouTube/Amazon-affiliate research project. Unrelated to this codebase.
-user`. All tests run scoped to a fixed `TEST_EMAIL`.
+- `C:\CLAUDE Files\Anglers Ledger` — **The Angler's Ledger**, a separate single-file HTML fishing log sold on Etsy. No shared code; it was inspired by this app ("ported from the Python app" comments refer to this codebase). Feature ideas may flow both ways (Records to Beat, species badges, per-species PB metric are candidates to port INTO this Streamlit app), but the two products deploy and evolve independently.
+- `C:\CLAUDE Files\YouTube` — YouTube/Amazon-affiliate research project. Unrelated to this codebase.
+
+## Tests
+`tests/test_fishing_log.py` — **44 tests** covering validation, data entry, search,
+and analytics. Each test gets a fresh **in-memory SQLite** engine, scoped to a fixed
+`TEST_EMAIL` (`angler@test.com`).
 `test_write_scoping` inserts a row as another user and asserts update/delete/
 set_dwr_filed cannot touch it. When adding data logic, add a test here and keep the
 SQL SQLite-compatible.
