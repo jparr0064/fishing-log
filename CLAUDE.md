@@ -52,13 +52,38 @@ project-related:
 - Compile-check: `.venv/Scripts/python.exe -m py_compile app.py`
 - First-time setup: `python -m venv .venv && .venv/Scripts/python.exe -m pip install -r requirements.txt pytest`
 
-**Streamlit version:** `requirements.txt` pins `streamlit==1.42.2` (what Streamlit
-Cloud installs). Note 1.42 exposes the signed-in identity as `st.experimental_user`,
-not `st.user` — the rename landed in 1.44, hence the `_st_user()` shim in `app.py`.
-`Authlib` is pinned to **1.6.5**; 1.6.6 breaks the OIDC callback (streamlit#13461).
-The local `.venv` was rebuilt from `requirements.txt` on 2026-07-25, so local and
-Cloud currently match — if that drifts and something "works locally, breaks on
-Cloud," suspect the gap.
+**Streamlit version:** `requirements.txt` pins `streamlit==1.60.0` (upgraded from
+1.42.2 on 2026-07-26 for CR-3 — 1.42 predates the 1.55.0 SSRF/path-traversal fix,
+streamlit#13733). 1.60 serves on **uvicorn**, and exposes the signed-in identity as
+`st.user`; `st.experimental_user` was the 1.42 name, so the `_st_user()` shim in
+`app.py` still covers both — harmless, and cheap insurance if the venv ever drops
+back.
+
+`Authlib` is pinned to **1.6.12**. It was on 1.6.5 to dodge streamlit#13461 (a
+broken `/oauth2callback`), but 1.6.5 carries nine advisories — including
+PYSEC-2026-2118, where a JWT with `alg:none` and an empty signature passed
+verification. Identity here comes from `st.user.email`, so that was a forgeable-token
+path. **#13461 is still open upstream**; the reports are Azure Entra and this app
+uses Google. There is no automated coverage of the OIDC callback — after any
+Authlib change, sign in with Google on the deployed app by hand. Roll back with
+`Authlib==1.6.5`.
+
+**Two dependency files:** `requirements.txt` holds direct deps (Streamlit Cloud
+installs from it); `requirements.lock.txt` is the fully resolved set for CI and
+reproducible installs. Regenerate the lock from a **clean** venv built off
+`requirements.txt` — never `pip freeze` the working `.venv`, which also contains
+pytest and pip-audit. `pip-audit --requirement requirements.lock.txt` currently
+reports no known vulnerabilities; CI re-runs it on every push, PR, and weekly.
+
+The local `.venv` was rebuilt from `requirements.txt` on 2026-07-25 and upgraded in
+place on 2026-07-26, so local and Cloud match — if that drifts and something "works
+locally, breaks on Cloud," suspect the gap.
+
+**Known deprecation:** `_mobile_sidebar_autoclose()` uses
+`st.components.v1.html`, which 1.60 warns is removed after 2026-06-01 (still
+functional). `st.iframe` is *not* a drop-in — it takes a URL, not an HTML string —
+and `st.html` does not execute scripts, which that hack needs. Rewriting it needs
+a different approach, not a rename.
 
 **Secrets** (`.streamlit/secrets.toml`, git-ignored — never commit):
 - `database_url` — Supabase Postgres connection string (SQLAlchemy/psycopg2 URL).
@@ -123,6 +148,11 @@ package. Keep logic in the package.
   Bass Angler Journal". Form `entry.*` IDs are hardcoded constants. **No email is
   prefilled** — the Google Form collects it from the signed-in Google account.
   Sizes use the `"` inch symbol; harvested = `N/A` when zero kept. Stripers only.
+- `backup_io.py` — the Export page's full backup and restore. `build_zip_bytes()`
+  packs `sessions.csv`, `fish.csv`, `spots.csv`, and a restorable `backup.json`.
+  There is **no server-side backup** — this ZIP is the only recovery path a user
+  has, which is why "Clear my data" gates the delete behind downloading one.
+- `auth_policy.py` — pure auth decision logic; see the Auth section.
 
 ### Data model (Supabase Postgres)
 - `sessions` — trip-level fields incl. `user_email`, `weather`, `air_temp`,
@@ -146,18 +176,44 @@ The app runs on Postgres but tests use in-memory SQLite, so **keep SQL portable*
 - `ROUND(AVG(...), 2)` works on both; `ROUND(x::numeric, 2)` does not.
 
 ## Auth
-- **Production (Cloud):** when `[auth]`/`[auth.google]` are in secrets,
-  `_oidc_active()` is true (probed by accessing `st.user.is_logged_in` in a
-  try/except — it raises when `[auth]` is absent, and a bare `hasattr` once
-  crashed the app on Cloud). Login shows a Google button (`st.login("google")`);
-  `st.user.email` is the identity. Sign-out calls `st.logout()`.
-- **Approval list:** signed-in emails are checked against `_allowed_emails()`
-  (the `allowed_emails` secret + `dev_user_email`, always allowed). Non-approved
-  users get `_show_not_approved_page` (demo + sign-out), not a real account.
-- **Local dev:** no `[auth]` configured → a plain email form (honor-system, dev only).
+
+**Auth fails closed (CR-1, 2026-07-26).** The decision logic lives in
+`fishing_log/auth_policy.py` — pure functions, no Streamlit import, so the whole
+matrix is unit-tested in `tests/test_auth_policy.py`. `app.py` only reads config
+and renders what the policy returns. Put auth rules there, not in `app.py`.
+
+Two settings drive it, read from secrets first, then `APP_ENV`/`AUTH_MODE`
+environment variables:
+- `app_env` — `production` (default) | `development`
+- `auth_mode` — `oidc` (default) | `local`
+
+- **The typed-email form requires BOTH `app_env="development"` and
+  `auth_mode="local"`.** Any other combination requires OIDC. Unrecognised values
+  (empty, `"prod"`, a typo) resolve to production/oidc — guessing wrong in the safe
+  direction costs a developer one setting; guessing the other way exposes real
+  trips. This replaced an `_oidc_active()` that probed `st.user.is_logged_in` in a
+  try/except and read *any* exception as "no OIDC", silently downgrading production
+  to a form where a visitor could type any address and read that person's data.
+- **Never reintroduce a fallback.** OIDC required but unconfigured, or an identity
+  lookup that throws, both render `_show_auth_unavailable_page()` and admit nobody.
+- **Production (Cloud):** `[auth]`/`[auth.google]` in secrets → Google button
+  (`st.login("google")`), `st.user.email` is the identity, sign-out calls
+  `st.logout()`. `_oidc_configured()` reads whether `[auth]` exists — a config fact,
+  not a runtime probe.
+- **Approval list:** OIDC identities are checked against `_allowed_emails()` (the
+  `allowed_emails` secret + `dev_user_email`, always allowed). Non-approved users
+  get `_show_not_approved_page` (demo + sign-out), not a real account. Absent
+  allowlist = owner only. Local mode skips the allowlist; it is already gated
+  behind an explicit development declaration.
+- **Local dev:** `.streamlit/secrets.toml` must carry `app_env = "development"` and
+  `auth_mode = "local"`, or the app shows the maintenance page. This is intentional.
 - **Demo:** the "Try the Demo →" button sets `st.session_state["user_email"]` to
-  `DEMO_EMAIL` and bypasses auth in both modes. Demo is read-only unless the
-  `dev_user_email` owner flips the sidebar "Edit demo data" toggle.
+  `DEMO_EMAIL` and bypasses auth in both modes — safe because it is a fixed
+  constant, never a user-supplied identity. Read-only unless the `dev_user_email`
+  owner flips the sidebar "Edit demo data" toggle.
+- **Logging:** auth problems go to the `fishing_log.auth` logger. Log composed
+  strings and exception *type names* only — never an exception message, which can
+  carry the connection string.
 
 ## Critical conventions (easy to get wrong)
 
@@ -174,8 +230,10 @@ The app runs on Postgres but tests use in-memory SQLite, so **keep SQL portable*
   (its PNG icon breaks inside the st_folium iframe).
 - **Color-blind user:** use the **`CB_PALETTE`** (Okabe-Ito) in charts and never rely
   on color alone — pair with labels/shapes (numbered route markers, 🐟 icons, N/A text).
-- **`_refresh()` clears `st.cache_data`** after a write. Note it currently clears the
-  cache for **all** users (a known perf issue flagged in REVIEW.md P2 #5).
+- **`_refresh()` bumps a per-user cache generation** after a write — it no longer
+  calls `st.cache_data.clear()`, which used to nuke every user's cache (REVIEW.md
+  P2 #5, since fixed). `_cache_ver()` is part of every cache key; the `ttl` on the
+  cached functions evicts the orphaned entries.
 - **Single-lake assumptions:** location/species defaults are constants in `app.py`.
 - **Offline scope is gone:** the app needs the network (Supabase + Folium tiles).
 
