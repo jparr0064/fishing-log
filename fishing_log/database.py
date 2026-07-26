@@ -141,20 +141,30 @@ SESSION_FIELDS = (
 # CRUD helpers
 # ---------------------------------------------------------------------------
 
-def insert_session(session: dict) -> int:
-    """Insert one session and return its new id."""
-    user_email = get_current_user()
+# The *_tx functions take an existing connection so a caller can compose a
+# whole trip — session + fish + spots — inside ONE transaction (CR-4). The
+# public wrappers below keep the original single-statement API for callers that
+# genuinely only write one thing.
+
+
+def insert_session_tx(conn, session: dict) -> int:
+    """Insert one session on an existing transaction; return its new id."""
     fields = ("user_email",) + SESSION_FIELDS
     cols = ", ".join(fields)
     placeholders = ", ".join(f":{f}" for f in fields)
-    params: dict = {"user_email": user_email}
+    params: dict = {"user_email": get_current_user()}
     params.update({f: session.get(f) for f in SESSION_FIELDS})
+    result = conn.execute(
+        text(f"INSERT INTO sessions ({cols}) VALUES ({placeholders}) RETURNING id"),
+        params,
+    )
+    return int(result.scalar())
+
+
+def insert_session(session: dict) -> int:
+    """Insert one session in its own transaction and return its new id."""
     with write_transaction() as conn:
-        result = conn.execute(
-            text(f"INSERT INTO sessions ({cols}) VALUES ({placeholders}) RETURNING id"),
-            params,
-        )
-        return int(result.scalar())
+        return insert_session_tx(conn, session)
 
 
 def _assert_session_owned(conn, session_id: int) -> None:
@@ -167,9 +177,8 @@ def _assert_session_owned(conn, session_id: int) -> None:
         raise PermissionError(f"Session {session_id} not found or not owned by current user.")
 
 
-def insert_fish(session_id: int, fish_rows) -> None:
-    """Insert one row per fish. Each item: {species, length, weight, kept?, depth?}."""
-    rows = [
+def _fish_rows(session_id: int, fish_rows) -> list:
+    return [
         {
             "session_id": session_id,
             "species": f["species"],
@@ -181,17 +190,29 @@ def insert_fish(session_id: int, fish_rows) -> None:
         for f in fish_rows
         if f.get("species")
     ]
+
+
+def insert_fish_tx(conn, session_id: int, fish_rows) -> None:
+    """Insert one row per fish on an existing transaction."""
+    rows = _fish_rows(session_id, fish_rows)
     if not rows:
         return
+    _assert_session_owned(conn, session_id)
+    conn.execute(
+        text(
+            "INSERT INTO fish (session_id, species, length, weight, kept, depth) "
+            "VALUES (:session_id, :species, :length, :weight, :kept, :depth)"
+        ),
+        rows,
+    )
+
+
+def insert_fish(session_id: int, fish_rows) -> None:
+    """Insert one row per fish. Each item: {species, length, weight, kept?, depth?}."""
+    if not _fish_rows(session_id, fish_rows):
+        return
     with write_transaction() as conn:
-        _assert_session_owned(conn, session_id)
-        conn.execute(
-            text(
-                "INSERT INTO fish (session_id, species, length, weight, kept, depth) "
-                "VALUES (:session_id, :species, :length, :weight, :kept, :depth)"
-            ),
-            rows,
-        )
+        insert_fish_tx(conn, session_id, fish_rows)
 
 
 def insert_spots(session_id: int, spots) -> None:
@@ -200,7 +221,14 @@ def insert_spots(session_id: int, spots) -> None:
     ``fish_count`` is how many fish were caught at the spot (nullable —
     legacy rows recorded only the boolean ``caught`` flag).
     """
-    rows = [
+    if not _spot_rows(session_id, spots):
+        return
+    with write_transaction() as conn:
+        insert_spots_tx(conn, session_id, spots)
+
+
+def _spot_rows(session_id: int, spots) -> list:
+    return [
         {
             "session_id": session_id,
             "latitude": float(s["lat"]),
@@ -212,17 +240,21 @@ def insert_spots(session_id: int, spots) -> None:
         for s in spots
         if s.get("lat") is not None and s.get("lon") is not None
     ]
+
+
+def insert_spots_tx(conn, session_id: int, spots) -> None:
+    """Insert spot rows on an existing transaction."""
+    rows = _spot_rows(session_id, spots)
     if not rows:
         return
-    with write_transaction() as conn:
-        _assert_session_owned(conn, session_id)
-        conn.execute(
-            text(
-                "INSERT INTO spots (session_id, latitude, longitude, label, caught, fish_count) "
-                "VALUES (:session_id, :latitude, :longitude, :label, :caught, :fish_count)"
-            ),
-            rows,
-        )
+    _assert_session_owned(conn, session_id)
+    conn.execute(
+        text(
+            "INSERT INTO spots (session_id, latitude, longitude, label, caught, fish_count) "
+            "VALUES (:session_id, :latitude, :longitude, :label, :caught, :fish_count)"
+        ),
+        rows,
+    )
 
 
 def insert_photo(session_id: int, path: str, caption: Optional[str] = None) -> int:

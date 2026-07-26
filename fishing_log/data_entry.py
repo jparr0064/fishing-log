@@ -6,10 +6,15 @@ one per fish. Zero fish means a skunked trip.
 """
 from __future__ import annotations
 
+import logging
+import uuid
+from contextlib import contextmanager
 from datetime import date as _date, datetime
 from typing import List, Optional
 
 from . import database as db
+
+_log = logging.getLogger("fishing_log.writes")
 
 
 def moon_phase_name(d) -> str:
@@ -32,6 +37,52 @@ def moon_phase_name(d) -> str:
 
 class ValidationError(ValueError):
     """Raised when a session or catch fails validation."""
+
+
+class SaveError(Exception):
+    """A write failed and was rolled back — nothing was changed.
+
+    Safe to show a user verbatim: it names no table, driver, or credential.
+    ``reference`` ties it to the full traceback in the server log.
+    """
+
+    def __init__(self, reference: str):
+        self.reference = reference
+        super().__init__(
+            "Your changes could not be saved, and nothing was changed. "
+            "Please try again in a moment. If it keeps happening, quote "
+            f"reference {reference}."
+        )
+
+
+@contextmanager
+def _atomic(operation: str, **context):
+    """Run a whole write in one transaction, or leave nothing behind (CR-4).
+
+    A trip is an aggregate — the session row, its fish, and its route spots.
+    These used to be written in separate transactions, so a failure part-way
+    committed a partial trip. On edit it was worse: the old code committed the
+    DELETE of fish and spots and only then re-inserted them, so a failure in
+    between destroyed a trip's catch data with nothing to replace it.
+
+    ValidationError passes through untouched — the caller already renders it.
+    Anything else is logged in full with a short correlation id and re-raised
+    as SaveError, so the user gets a sentence instead of a stack trace.
+    """
+    reference = uuid.uuid4().hex[:8].upper()
+    try:
+        with db.write_transaction() as conn:
+            yield conn
+    except ValidationError:
+        raise
+    except Exception:
+        # exception() captures the traceback; the reference is the only part
+        # the user sees, which is what makes the two joinable.
+        _log.exception(
+            "[writes] %s failed and was rolled back (ref=%s, context=%s)",
+            operation, reference, context,
+        )
+        raise SaveError(reference) from None
 
 
 WEATHER_OPTIONS = ["Sunny", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Windy", "Fog", "Snow"]
@@ -244,17 +295,22 @@ def validate_spots(spots: List[dict]) -> List[dict]:
 def add_session(
     session: dict, fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None
 ) -> int:
-    """Validate and persist a session, its fish, and its map spots. Returns new id."""
-    from sqlalchemy import text
+    """Validate and persist a session, its fish, and its map spots. Returns new id.
+
+    All three inserts share one transaction: a failure on the fish or the spots
+    rolls the session back too, so a half-saved trip cannot reach the database.
+    """
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
     cleaned_spots = validate_spots(spots or [])
     if cleaned_spots:
         cleaned["latitude"] = cleaned_spots[0]["lat"]
         cleaned["longitude"] = cleaned_spots[0]["lon"]
-    session_id = db.insert_session(cleaned)
-    db.insert_fish(session_id, cleaned_fish)
-    db.insert_spots(session_id, cleaned_spots)
+
+    with _atomic("add_session", fish=len(cleaned_fish), spots=len(cleaned_spots)) as conn:
+        session_id = db.insert_session_tx(conn, cleaned)
+        db.insert_fish_tx(conn, session_id, cleaned_fish)
+        db.insert_spots_tx(conn, session_id, cleaned_spots)
     return session_id
 
 
@@ -262,7 +318,13 @@ def update_session(
     session_id: int, session: dict,
     fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None,
 ) -> None:
-    """Replace a session's fields and (entirely) its fish and spots lists."""
+    """Replace a session's fields and (entirely) its fish and spots lists.
+
+    The update, the deletes, and the re-inserts all share one transaction. The
+    previous version committed the deletes first and re-inserted afterwards, so
+    a failure in between left the trip stripped of its fish and spots with
+    nothing to put back.
+    """
     from sqlalchemy import text
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
@@ -283,20 +345,22 @@ def update_session(
     params["id"] = session_id
     params["email"] = db.get_current_user()
 
-    with db.write_transaction() as conn:
+    with _atomic("update_session", session_id=session_id,
+                 fish=len(cleaned_fish), spots=len(cleaned_spots)) as conn:
         result = conn.execute(
             text(f"UPDATE sessions SET {assignments} WHERE id = :id AND user_email = :email"),
             params,
         )
         if result.rowcount == 0:
             raise ValidationError(f"No session with id {session_id}.")
+
         conn.execute(text("DELETE FROM fish WHERE session_id = :sid"), {"sid": session_id})
+        db.insert_fish_tx(conn, session_id, cleaned_fish)
+
+        # spots=None means "leave the route alone"; a list replaces it wholesale.
         if spots is not None:
             conn.execute(text("DELETE FROM spots WHERE session_id = :sid"), {"sid": session_id})
-
-    db.insert_fish(session_id, cleaned_fish)
-    if spots is not None:
-        db.insert_spots(session_id, cleaned_spots)
+            db.insert_spots_tx(conn, session_id, cleaned_spots)
 
 
 def set_dwr_filed(session_id: int, filed: bool) -> int:
@@ -307,7 +371,7 @@ def set_dwr_filed(session_id: int, filed: bool) -> int:
     """
     from sqlalchemy import text
     filed_at = _date.today().isoformat() if filed else None
-    with db.write_transaction() as conn:
+    with _atomic("set_dwr_filed", session_id=session_id, filed=bool(filed)) as conn:
         result = conn.execute(
             text("UPDATE sessions SET dwr_filed = :filed, dwr_filed_at = :filed_at "
                  "WHERE id = :id AND user_email = :email"),
@@ -318,8 +382,9 @@ def set_dwr_filed(session_id: int, filed: bool) -> int:
 
 
 def delete_session(session_id: int) -> None:
+    """Delete a session; ON DELETE CASCADE removes its fish and spots."""
     from sqlalchemy import text
-    with db.write_transaction() as conn:
+    with _atomic("delete_session", session_id=session_id) as conn:
         conn.execute(
             text("DELETE FROM sessions WHERE id = :id AND user_email = :email"),
             {"id": session_id, "email": db.get_current_user()},

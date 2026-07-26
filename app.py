@@ -949,7 +949,12 @@ def _dwr_nudge(sid: int):
 
             def _toggle(_sid=sid, _key=fk):
                 new_val = st.session_state[_key]
-                n = data_entry.set_dwr_filed(_sid, new_val)
+                try:
+                    n = data_entry.set_dwr_filed(_sid, new_val)
+                except data_entry.SaveError as exc:
+                    st.session_state.pop(_key, None)  # revert display to DB value
+                    st.toast(f"⚠️ {exc}", icon="⚠️")
+                    return
                 if n == 0:
                     st.session_state.pop(_key, None)
                     st.toast("⚠️ Could not save — try again.", icon="⚠️")
@@ -1132,6 +1137,11 @@ def page_log_session():
             st.rerun()
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
+        except data_entry.SaveError as exc:
+            # Rolled back — nothing was written, so retrying is safe and will
+            # not create a duplicate trip. Form state is deliberately left
+            # intact so the angler doesn't retype the whole trip.
+            st.error(str(exc), icon="⚠️")
 
     # Show save confirmation + DWR nudge below the form so the form stays
     # ready at the top for the next entry.
@@ -1235,10 +1245,14 @@ def _render_session_detail(detail: dict, sid: int):
                     icon="📋",
                 )
                 if st.button("Marked as filed by mistake? Unmark", key=f"unfile_{sid}"):
-                    data_entry.set_dwr_filed(sid, False)
-                    st.session_state.pop(f"dwr_filed_{sid}", None)
-                    _refresh()
-                    st.rerun()
+                    try:
+                        data_entry.set_dwr_filed(sid, False)
+                    except data_entry.SaveError as exc:
+                        st.error(str(exc), icon="⚠️")
+                    else:
+                        st.session_state.pop(f"dwr_filed_{sid}", None)
+                        _refresh()
+                        st.rerun()
             skey = f"edit_spots_{sid}"
             if skey not in st.session_state:
                 st.session_state[skey] = [
@@ -1317,7 +1331,12 @@ def _render_session_detail(detail: dict, sid: int):
                 st.session_state[fk] = False
 
             def _toggle_filed(_sid=sid, _key=fk):
-                n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+                try:
+                    n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+                except data_entry.SaveError as exc:
+                    st.session_state.pop(_key, None)  # revert display to DB value
+                    st.toast(f"⚠️ {exc}", icon="⚠️")
+                    return
                 if n == 0:
                     st.session_state.pop(_key, None)  # revert display to DB value
                     st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
@@ -1355,7 +1374,13 @@ def _render_session_detail(detail: dict, sid: int):
             )
             c_yes, c_no = st.columns([1, 1])
             if c_yes.button("Yes — delete permanently", type="primary", key=f"del_yes_{sid}"):
-                data_entry.delete_session(sid)
+                try:
+                    data_entry.delete_session(sid)
+                except data_entry.SaveError as exc:
+                    # Rolled back — the trip is still there. Leave the confirm
+                    # armed so they can retry without re-arming it.
+                    st.error(str(exc), icon="⚠️")
+                    st.stop()
                 _refresh()
                 st.session_state.pop(arm_key, None)
                 st.session_state.pop("browse_sel", None)
@@ -1488,6 +1513,10 @@ def _edit_form(detail: dict):
             st.rerun()
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
+        except data_entry.SaveError as exc:
+            # Rolled back — the original trip, its fish and its spots are all
+            # still intact. Retrying is safe.
+            st.error(str(exc), icon="⚠️")
 
 
 def _render_whats_working():
