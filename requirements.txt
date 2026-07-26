@@ -1,17 +1,10 @@
-# Direct dependencies. Exact transitive versions live in requirements.lock.txt —
-# install from the lock file for a reproducible environment (CI, staging, Cloud
-# troubleshooting); install from this file when deliberately picking up updates.
-#
-# CR-3 (2026-07-26): upgraded from streamlit 1.42.2, which predates the 1.55.0
-# security fix for SSRF / path traversal in component and static-file handling.
-# See streamlit/streamlit#13733.
-streamlit==1.60.0
-
-# The pyarrow<20 / numpy<2.3 / protobuf<6 caps that used to live here existed
-# only to hold those libraries at versions contemporary with streamlit 1.42,
-# whose native code crashed at startup against 2026-era builds. 1.60 supports
-# current versions, so the caps are gone — reinstating them would now pin the
-# app to builds *older* than what streamlit itself expects.
+streamlit==1.42.2
+# Pinned to versions contemporary with streamlit 1.42.2 — unpinned, the cloud
+# installs 2026-era pyarrow/numpy whose native code crashes the old streamlit
+# at startup (process killed, no traceback).
+pyarrow<20
+numpy<2.3
+protobuf<6
 Pillow>=9.0
 pandas>=2.0
 folium>=0.16
@@ -20,30 +13,6 @@ streamlit-geolocation>=0.0.10
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 altair>=5.0
-
-# Authlib was pinned to 1.6.5 to dodge streamlit/streamlit#13461 ("400:
-# 'NoneType' object does not support item assignment" on /oauth2callback).
-# That pin was moved to 1.6.12 on 2026-07-26 because 1.6.5 carries nine known
-# vulnerabilities, several of which land squarely on this app's threat model:
-#
-#   PYSEC-2026-2118 (fix 1.6.7)  a JWT with alg:none and an empty signature
-#                                passed verification — affects 1.6.5 exactly
-#   PYSEC-2026-287  (fix 1.6.9)  JWK header injection forges arbitrary JWTs
-#   PYSEC-2026-2117 (fix 1.6.9)  OIDC ID-token validation flaw
-#   PYSEC-2026-25   (fix 1.6.11) CSRF in starlette_client (streamlit 1.60 runs
-#                                on starlette)
-#
-# Identity here comes from st.user.email, so a forgeable ID token is an
-# account-takeover path — a worse risk than the compatibility bug, which was
-# reported against Azure Entra while this app uses Google.
-#
-# ⚠ #13461 is still OPEN upstream and the OIDC callback has NO automated
-# coverage — it cannot be exercised locally. Verify by actually signing in with
-# Google after deploying. To roll back: pin Authlib==1.6.5 and redeploy.
-Authlib==1.6.12
-
-# pyarrow: streamlit allows <25. Held at 19.0.1 by the old cap, which carries
-# PYSEC-2026-113 (use-after-free reading malicious Arrow IPC files). This app
-# never reads user-supplied Arrow files, so exposure is remote — but the fix is
-# free.
-pyarrow>=23.0.1,<25
+# Pinned: Authlib 1.6.6 breaks streamlit auth ("400: 'NoneType' object does not
+# support item assignment" on /oauth2callback) — see streamlit/streamlit#13461.
+Authlib==1.6.5

@@ -22,7 +22,7 @@ def _like(col: str, param: str) -> str:
     return f"LOWER({col}) LIKE LOWER(:{param})"
 
 
-def _species_list_map(session_ids: list) -> dict:
+def _species_list_map(engine, session_ids: list) -> dict:
     """Return {session_id: 'Bass (3), Striper (1)'} for the given session IDs."""
     if not session_ids:
         return {}
@@ -31,7 +31,7 @@ def _species_list_map(session_ids: list) -> dict:
         "FROM fish WHERE session_id IN :sids "
         "GROUP BY session_id, species ORDER BY species"
     ).bindparams(bindparam("sids", expanding=True))
-    with db.read_connection() as conn:
+    with engine.connect() as conn:
         rows = conn.execute(q, {"sids": session_ids}).mappings().all()
     result: dict = {}
     for r in rows:
@@ -78,17 +78,19 @@ def list_sessions(
         ORDER BY s.date DESC, (s.start_time IS NULL), s.start_time DESC
     """)
 
-    with db.read_connection() as conn:
+    engine = db.get_engine()
+    with engine.connect() as conn:
         df = pd.read_sql_query(query, conn, params=params)
 
-    sl_map = _species_list_map(df["id"].tolist() if not df.empty else [])
+    sl_map = _species_list_map(engine, df["id"].tolist() if not df.empty else [])
     df["species_list"] = df["id"].map(sl_map).fillna("") if not df.empty else ""
     return df
 
 
 def get_session(session_id: int) -> Optional[dict]:
     """Full detail for one session (scoped to current user)."""
-    with db.read_connection() as conn:
+    engine = db.get_engine()
+    with engine.connect() as conn:
         row = conn.execute(
             text("SELECT * FROM sessions WHERE id = :id AND user_email = :email"),
             {"id": session_id, "email": _user()},
@@ -153,10 +155,11 @@ def map_rows(
         ORDER BY s.date DESC
     """)
 
-    with db.read_connection() as conn:
+    engine = db.get_engine()
+    with engine.connect() as conn:
         df = pd.read_sql_query(query, conn, params=params)
 
-    sl_map = _species_list_map(df["id"].tolist() if not df.empty else [])
+    sl_map = _species_list_map(engine, df["id"].tolist() if not df.empty else [])
     df["species_list"] = df["id"].map(sl_map).fillna("") if not df.empty else ""
     return df
 
@@ -190,7 +193,7 @@ def caught_spot_points(
         WHERE {' AND '.join(where)}
     """)
 
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(query, params).mappings().all()
     return [[r["latitude"], r["longitude"]] for r in rows]
 
@@ -217,7 +220,7 @@ def calendar_month(year: int, month: int) -> dict:
         GROUP BY s.id, s.date, s.location_name, s.moon_phase, s.start_time
         ORDER BY s.date, s.start_time
     """)
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(query, {
             "email": _user(), "date_from": date_from, "date_to": date_to,
         }).mappings().all()
@@ -244,12 +247,12 @@ def fish_export() -> pd.DataFrame:
         WHERE s.user_email = :email
         ORDER BY s.date, f.id
     """)
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         return pd.read_sql_query(query, conn, params={"email": _user()})
 
 
 def distinct_locations() -> list:
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
             text("SELECT DISTINCT location_name FROM sessions "
                  "WHERE user_email = :email ORDER BY location_name"),
@@ -259,7 +262,7 @@ def distinct_locations() -> list:
 
 
 def distinct_species() -> list:
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
             text("SELECT DISTINCT f.species FROM fish f "
                  "JOIN sessions s ON s.id = f.session_id "
@@ -271,7 +274,7 @@ def distinct_species() -> list:
 
 def baits_by_frequency() -> list:
     """Distinct bait/lures, most-used first."""
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         rows = conn.execute(
             text("""
                 SELECT bait_lure, COUNT(*) AS n
@@ -288,7 +291,7 @@ def baits_by_frequency() -> list:
 
 def recent_defaults() -> dict:
     """Weather / temps / bait from the most recent session, to pre-fill the form."""
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         row = conn.execute(
             text("""
                 SELECT weather, air_temp, water_temp, bait_lure, fishing_style
@@ -308,7 +311,7 @@ def last_spot():
     Used to center the spot-picker map on the user's last fishing spot —
     most anglers return to the same water.
     """
-    with db.read_connection() as conn:
+    with db.get_engine().connect() as conn:
         row = conn.execute(
             text("""
                 SELECT latitude, longitude
