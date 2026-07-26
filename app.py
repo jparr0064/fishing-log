@@ -419,30 +419,46 @@ def _is_demo() -> bool:
     return db.get_current_user() == DEMO_EMAIL and not st.session_state.get("demo_admin_toggle")
 
 
+# Columns the app expects beyond the original schema. Checked at startup,
+# never created — see _bootstrap. Each maps to a file in migrations/.
+_REQUIRED_COLUMNS = {
+    ("spots", "fish_count"): "002_spots_fish_count.sql",
+}
+
+
 @st.cache_resource
 def _bootstrap():
-    """Wire up DATABASE_URL from secrets and initialise the engine once.
+    """Wire up DATABASE_URL from secrets and verify the schema once.
 
-    Also applies idempotent schema upgrades (guarded with IF NOT EXISTS, so
-    they are safe to run on every startup and are no-ops once applied).
-    Returns an error string if an upgrade failed (surfaced to the owner in
-    the sidebar), else None — a failure must never be silently swallowed.
+    This used to run `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on every start.
+    That stops working under CR-2: the runtime role is deliberately stripped of
+    DDL rights, so a startup migration would fail on every boot — and a running
+    app quietly altering its own schema is what "controlled migrations" (CR-4)
+    exists to prevent. Schema changes now live in migrations/ and are applied
+    deliberately with the fishing_deploy role.
+
+    Startup only *checks*. Returns an error string naming the missing migration
+    (surfaced to the owner in the sidebar), else None — never silently swallowed.
     """
     import os
     if "database_url" in st.secrets:
         os.environ["DATABASE_URL"] = st.secrets["database_url"]
     try:
-        from sqlalchemy import text
-        with db.get_engine().begin() as conn:
-            # v2026-07: per-spot fish counts for the ×N route-map badge.
-            conn.execute(text(
-                "ALTER TABLE spots ADD COLUMN IF NOT EXISTS fish_count integer"
-            ))
+        from sqlalchemy import inspect as sa_inspect
+        inspector = sa_inspect(db.get_engine())
+        missing = []
+        for (table, column), migration in _REQUIRED_COLUMNS.items():
+            names = {c["name"] for c in inspector.get_columns(table)}
+            if column not in names:
+                missing.append(f"{table}.{column} (run migrations/{migration})")
+        if missing:
+            msg = "Schema is behind: missing " + "; ".join(missing)
+            _auth_log.error("[bootstrap] %s", msg)
+            return msg
     except Exception as exc:
-        # Don't block startup — the app still works for everything except
-        # the migrated feature — but LOG it and tell the owner.
-        msg = f"Schema upgrade failed at startup: {exc}"
-        print(f"[bootstrap] {msg}")
+        # A failed *check* must not take the app down — but say so plainly.
+        msg = f"Could not verify database schema ({type(exc).__name__})"
+        _auth_log.error("[bootstrap] %s", msg)
         return msg
     return None
 

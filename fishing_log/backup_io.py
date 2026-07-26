@@ -42,7 +42,7 @@ def _sessions_df() -> pd.DataFrame:
         FROM sessions WHERE user_email = :email
         ORDER BY date, id
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         return pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
 
 
@@ -54,7 +54,7 @@ def _fish_df() -> pd.DataFrame:
         WHERE s.user_email = :email
         ORDER BY f.session_id, f.id
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         return pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
 
 
@@ -66,7 +66,7 @@ def _spots_df() -> pd.DataFrame:
         WHERE s.user_email = :email
         ORDER BY sp.session_id, sp.id
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         df = pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
     if not df.empty:
         # Route order within each trip (spots were inserted in click order).
@@ -187,7 +187,7 @@ def parse_backup(raw: bytes) -> dict:
 
 def _existing_keys() -> set:
     q = text("SELECT date, start_time, location_name FROM sessions WHERE user_email = :email")
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         rows = conn.execute(q, {"email": db.get_current_user()}).mappings().all()
     return {
         (str(r["date"])[:10], r["start_time"] or "", r["location_name"] or "")
@@ -226,7 +226,7 @@ def restore_backup(data: dict, skip_duplicates: bool = True) -> dict:
             sid = data_entry.add_session(session, fish, spots)
             filed_at = s.get("dwr_filed_at")
             if s.get("dwr_filed") and filed_at:
-                with db.get_engine().begin() as conn:
+                with db.write_transaction() as conn:
                     conn.execute(
                         text("UPDATE sessions SET dwr_filed_at = :d "
                              "WHERE id = :id AND user_email = :email"),

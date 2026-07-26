@@ -40,7 +40,7 @@ def _session_frame() -> pd.DataFrame:
         WHERE s.user_email = :email
         GROUP BY s.id
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
 
     if df.empty:
@@ -283,7 +283,7 @@ def by_species() -> pd.DataFrame:
         WHERE s.user_email = :email
         GROUP BY f.species
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
 
     if df.empty:
@@ -301,7 +301,7 @@ def _fish_with_dates() -> pd.DataFrame:
         FROM fish f JOIN sessions s ON s.id = f.session_id
         WHERE s.user_email = :email
     """)
-    with db.get_engine().connect() as conn:
+    with db.read_connection() as conn:
         df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")

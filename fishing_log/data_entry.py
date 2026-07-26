@@ -283,7 +283,7 @@ def update_session(
     params["id"] = session_id
     params["email"] = db.get_current_user()
 
-    with db.get_engine().begin() as conn:
+    with db.write_transaction() as conn:
         result = conn.execute(
             text(f"UPDATE sessions SET {assignments} WHERE id = :id AND user_email = :email"),
             params,
@@ -307,7 +307,7 @@ def set_dwr_filed(session_id: int, filed: bool) -> int:
     """
     from sqlalchemy import text
     filed_at = _date.today().isoformat() if filed else None
-    with db.get_engine().begin() as conn:
+    with db.write_transaction() as conn:
         result = conn.execute(
             text("UPDATE sessions SET dwr_filed = :filed, dwr_filed_at = :filed_at "
                  "WHERE id = :id AND user_email = :email"),
@@ -319,7 +319,7 @@ def set_dwr_filed(session_id: int, filed: bool) -> int:
 
 def delete_session(session_id: int) -> None:
     from sqlalchemy import text
-    with db.get_engine().begin() as conn:
+    with db.write_transaction() as conn:
         conn.execute(
             text("DELETE FROM sessions WHERE id = :id AND user_email = :email"),
             {"id": session_id, "email": db.get_current_user()},

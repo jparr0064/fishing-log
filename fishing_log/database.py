@@ -6,6 +6,7 @@ the top of each Streamlit script run (in main()) before any DB operations.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -53,8 +54,74 @@ def get_engine() -> Engine:
 
 
 def get_connection():
-    """Return the SQLAlchemy engine (used by pandas read_sql_query)."""
+    """Return the SQLAlchemy engine (used by pandas read_sql_query).
+
+    Deprecated for query use: it hands back a bare engine, so anything running
+    on it gets a connection with no RLS scope applied and will see nothing once
+    the app connects as ``fishing_app``. Use :func:`read_connection` or
+    :func:`write_transaction` instead.
+    """
     return get_engine()
+
+
+# ---------------------------------------------------------------------------
+# RLS scoping (CR-2)
+#
+# Postgres policies on sessions/fish/spots filter on a per-transaction setting,
+# app.user_email. Every connection must publish the verified identity before it
+# queries, or the policies match nothing and the user sees an empty app.
+#
+# The application's own `WHERE user_email = :email` predicates stay exactly
+# where they are. They are no longer the only thing standing between two club
+# members' data, but they remain the first line — defence in depth, per CR-2.
+# ---------------------------------------------------------------------------
+
+
+def _apply_user_scope(conn) -> None:
+    """Publish the current user to this transaction for RLS policies.
+
+    Uses ``set_config(..., is_local => true)`` rather than ``SET LOCAL``: SET
+    does not accept bind parameters, so the literal form would mean splicing an
+    email into SQL. Both are transaction-scoped, which is what makes this safe
+    under connection pooling — the value is discarded at COMMIT or ROLLBACK and
+    cannot leak into the next checkout of the same connection.
+
+    No-op on SQLite: the test suite runs in-memory and has no RLS. Tests still
+    cover isolation through the application predicates (test_write_scoping);
+    the database-level guarantee is exercised by the SQL in
+    migrations/001_rls_least_privilege.sql.
+    """
+    if conn.dialect.name != "postgresql":
+        return
+    conn.execute(
+        text("SELECT set_config('app.user_email', :email, true)"),
+        {"email": get_current_user()},
+    )
+
+
+@contextmanager
+def read_connection():
+    """A connection for reads, scoped to the current user.
+
+    The set_config call opens the implicit transaction, so every later query on
+    this connection sees the setting. Nothing is committed — the connection is
+    rolled back on exit.
+    """
+    with get_engine().connect() as conn:
+        _apply_user_scope(conn)
+        yield conn
+
+
+@contextmanager
+def write_transaction():
+    """A transaction for writes, scoped to the current user.
+
+    Commits on success, rolls back on any exception — so an aggregate write
+    that fails part-way leaves nothing behind (see CR-4).
+    """
+    with get_engine().begin() as conn:
+        _apply_user_scope(conn)
+        yield conn
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +149,7 @@ def insert_session(session: dict) -> int:
     placeholders = ", ".join(f":{f}" for f in fields)
     params: dict = {"user_email": user_email}
     params.update({f: session.get(f) for f in SESSION_FIELDS})
-    with get_engine().begin() as conn:
+    with write_transaction() as conn:
         result = conn.execute(
             text(f"INSERT INTO sessions ({cols}) VALUES ({placeholders}) RETURNING id"),
             params,
@@ -116,7 +183,7 @@ def insert_fish(session_id: int, fish_rows) -> None:
     ]
     if not rows:
         return
-    with get_engine().begin() as conn:
+    with write_transaction() as conn:
         _assert_session_owned(conn, session_id)
         conn.execute(
             text(
@@ -147,7 +214,7 @@ def insert_spots(session_id: int, spots) -> None:
     ]
     if not rows:
         return
-    with get_engine().begin() as conn:
+    with write_transaction() as conn:
         _assert_session_owned(conn, session_id)
         conn.execute(
             text(
@@ -165,7 +232,7 @@ def insert_photo(session_id: int, path: str, caption: Optional[str] = None) -> i
 
 def session_count() -> int:
     user_email = get_current_user()
-    with get_engine().connect() as conn:
+    with read_connection() as conn:
         result = conn.execute(
             text("SELECT COUNT(*) FROM sessions WHERE user_email = :email"),
             {"email": user_email},
@@ -176,7 +243,7 @@ def session_count() -> int:
 def delete_all_sessions() -> int:
     """Delete all sessions for the current user. Returns rows removed."""
     user_email = get_current_user()
-    with get_engine().begin() as conn:
+    with write_transaction() as conn:
         result = conn.execute(
             text("DELETE FROM sessions WHERE user_email = :email"),
             {"email": user_email},
