@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import calendar as _cal
 import html as _html
+import logging
 import os
 from datetime import date, datetime
 
@@ -19,7 +20,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from fishing_log import (
-    analytics, backup_io, data_entry, database as db, dwr_report, map_view, search,
+    analytics, auth_policy, backup_io, data_entry, database as db, dwr_report,
+    map_view, observability as obs, search,
 )
 
 # Optional GPS button component; app still works if it isn't installed.
@@ -32,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-22.1"
+APP_BUILD = "2026-07-26.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -45,8 +47,112 @@ SPECIES = ["Striper", "Largemouth Bass", "Smallmouth Bass", "Catfish", "Muskie"]
 # Default "From" date for Map and Browse filters — start of year so all trips show.
 DEFAULT_FROM_DATE = date(2026, 1, 1)
 
+# Trip cards drawn per Browse page. Two per row, so this is 10 rows — enough to
+# scan a season without building 500 card blocks on every rerun (CR-5).
+BROWSE_PAGE_SIZE = 20
+
 # Okabe-Ito color-blind-safe palette (distinguishable across CVD types).
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
+
+
+# Markdown metacharacters. Backslash-escaping is invisible in the rendered
+# output (CommonMark drops the backslash), so this changes nothing a user sees
+# except that their text is no longer interpreted.
+_MD_SPECIAL = "\\`*_{}[]()#+-.!|>~"
+
+
+def _plain(value) -> str:
+    """User-authored text, made safe for a Markdown renderer (CR-9).
+
+    st.markdown / st.write / st.info all parse Markdown, so a location name of
+    `**Secret Spot**` renders bold and a trip note of `[free lures](http://…)`
+    becomes a live link in someone else's browser. None of these fields are
+    meant to be formatted — they are things an angler typed about a fish.
+
+    The backslash must be escaped first, or it would double-escape the
+    backslashes this function itself adds.
+    """
+    if value is None:
+        return ""
+    out = str(value)
+    for ch in _MD_SPECIAL:
+        out = out.replace(ch, "\\" + ch)
+    return out
+
+
+def _owner_health_panel():
+    """Sidebar health readout, owner only (CR-10).
+
+    Community Cloud has no metrics backend to ship to, so "monitoring" here is
+    a panel the owner can read and a log line the owner can grep. The point is
+    that repeated failures surface here rather than arriving as a phone call
+    from a club member.
+    """
+    failures = obs.recent_failures()
+
+    if obs.should_alert_owner():
+        st.sidebar.error(
+            f"⚠️ {len(failures)} failures in the last "
+            f"{obs.ALERT_WINDOW_SECONDS // 60} min — check the logs.",
+            icon="🚨",
+        )
+
+    label = f"📈 Health ({len(failures)} recent failures)" if failures else "📈 Health"
+    with st.sidebar.expander(label):
+        pool = obs.pool_stats(db.get_engine())
+        if pool:
+            st.caption(
+                f"DB pool — {pool['checked_out']} in use, "
+                f"capacity {pool['capacity']} "
+                f"(base {pool['size']}, {pool['overflow']} overflow open)"
+            )
+            if pool.get("exhausted"):
+                st.error("Connection pool exhausted.", icon="🔌")
+        else:
+            st.caption("DB pool — counters unavailable.")
+
+        if not failures:
+            st.caption("No failures recorded in this window.")
+        else:
+            for seconds_ago, event in reversed(failures[-8:]):
+                st.caption(f"• {event} — {seconds_ago}s ago")
+            if st.button("Clear", key="clear_failures"):
+                obs.reset_failures()
+                st.rerun()
+
+        st.caption(f"Build {APP_BUILD}. Full tracebacks are in the server log; "
+                   "search for the reference shown in the error.")
+
+
+def _chart_ready(df, *value_cols) -> bool:
+    """Whether a frame can actually be plotted (CR-9).
+
+    Vega logs "infinite extent for field" warnings and draws an empty axis when
+    handed an empty frame or a column that is all-NaN, which is how the browser
+    console filled with them during normal demo use. Callers show a plain-text
+    explanation instead.
+    """
+    if df is None or len(df) == 0:
+        return False
+    for col in value_cols:
+        if col not in df.columns:
+            return False
+        series = pd.to_numeric(df[col], errors="coerce")
+        if not series.notna().any():
+            return False
+    return True
+
+
+def _chart_data_table(df, caption: str = "Show the numbers behind this chart"):
+    """A text alternative for a chart (CR-9).
+
+    A chart is an image to a screen reader and invisible to someone who cannot
+    distinguish its colours. The same numbers in a table are readable by both,
+    and by anyone who just wants the exact value. Collapsed so it does not
+    crowd the visual layout.
+    """
+    with st.expander(caption):
+        st.dataframe(df, width="stretch", hide_index=True)
 
 
 def _inject_css():
@@ -204,19 +310,63 @@ SESSION_DISPLAY_COLS = {
 }
 
 
-def _oidc_active() -> bool:
-    """True when OIDC auth (st.login/st.user) is configured and usable.
+_auth_log = logging.getLogger("fishing_log.auth")
 
-    Accessing st.user.is_logged_in raises unless an [auth] block is configured
-    in secrets, and st.user may not exist on older Streamlit builds. Treat ANY
-    failure as "not active" and fall back to the local email form — otherwise
-    the whole app crashes on load (as it did on Streamlit Cloud without [auth]).
+
+def _log_auth_problem(message: str) -> None:
+    """Record an auth configuration failure.
+
+    Only ever passed strings this module composed itself — never a secret value
+    and never a raw exception message, which can carry connection strings or
+    tokens. Exception paths log the type name only.
+    """
+    _auth_log.error("[auth] %s", message)
+
+
+def _secret(name: str, default=""):
+    """Read a secret, tolerating a missing or unreadable secrets.toml."""
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def _oidc_configured() -> bool:
+    """True when an [auth] block is present in secrets.
+
+    Deliberately a *configuration* check rather than a runtime probe. The
+    previous version called st.user.is_logged_in inside a try/except and read
+    any exception as "no OIDC", which silently downgraded production to the
+    typed-email form. Configuration is a fact we can read; a probe is not.
     """
     try:
-        _ = _st_user().is_logged_in
-        return True
+        auth = st.secrets.get("auth", None)
     except Exception:
         return False
+    if not auth:
+        return False
+    try:
+        return bool(dict(auth))
+    except Exception:
+        return True
+
+
+def _auth_config() -> dict:
+    """Auth configuration: secrets first, environment variable as fallback.
+
+    Streamlit Cloud supplies settings through secrets; a container host is more
+    likely to use env vars. Support both rather than forcing one.
+    """
+    return {
+        "app_env": _secret("app_env", os.environ.get("APP_ENV", "")),
+        "auth_mode": _secret("auth_mode", os.environ.get("AUTH_MODE", "")),
+        "oidc_configured": _oidc_configured(),
+    }
+
+
+def _oidc_active() -> bool:
+    """True when this deployment requires Google sign-in."""
+    return auth_policy.resolve_auth(**_auth_config())[0] == auth_policy.AUTH_OIDC
 
 
 def _st_user():
@@ -266,19 +416,34 @@ def _allowed_emails() -> set:
     string). If it's absent, only the owner (`dev_user_email`) can sign in —
     a safe default until you add people.
     """
-    raw = st.secrets.get("allowed_emails", [])
-    if isinstance(raw, str):
-        raw = raw.split(",")
-    allowed = {str(e).strip().lower() for e in raw if e and str(e).strip()}
-    owner = str(st.secrets.get("dev_user_email", "")).strip().lower()
-    if owner:
-        allowed.add(owner)
-    return allowed
+    return auth_policy.allowed_emails(
+        _secret("allowed_emails", []), _secret("dev_user_email", "")
+    )
 
 
 def _is_allowed(email: str) -> bool:
     """Whether this signed-in email may have a real account (approval list)."""
-    return email.lower().strip() in _allowed_emails()
+    return auth_policy.is_allowed(
+        email, _secret("allowed_emails", []), _secret("dev_user_email", "")
+    )
+
+
+def _show_auth_unavailable_page() -> None:
+    """Production auth is unusable — admit nobody, and reveal nothing.
+
+    Reached when OIDC is required but unconfigured, or when the identity
+    lookup itself fails. Deliberately offers no way in: no email form, and no
+    detail a visitor could use to infer the misconfiguration.
+    """
+    st.markdown("## 🎣 Fishing Log")
+    st.error(
+        "**Sign-in is temporarily unavailable.**\n\n"
+        "The app can't verify accounts right now, so it isn't letting anyone "
+        "in. This is a configuration problem on our end, not something you "
+        "did — please try again later.",
+        icon="🔒",
+    )
+    st.caption("Owner: check the server log for `[auth]` entries.")
 
 
 def _show_not_approved_page(email: str) -> None:
@@ -297,34 +462,56 @@ def _show_not_approved_page(email: str) -> None:
 
 
 def _get_user_email() -> str:
-    """Return the current user's email, or stop to show the login screen.
+    """Return the current user's email, or stop to show a login/error screen.
 
-    Three modes:
-    - Demo: session_state["user_email"] == DEMO_EMAIL (bypasses auth in all modes)
-    - OIDC (production): [auth] is configured in secrets.toml → use st.login/st.user
-    - Local dev: no OIDC configured → plain email form
+    Configuration decides the route; ``auth_policy`` decides the outcome. The
+    typed-email form appears only when the deployment declares itself
+    development *and* selects local auth — never as a fallback from a failure.
     """
-    # Demo shortcut — works regardless of auth mode
+    # Demo shortcut — a fixed read-only account, set only by the demo button.
+    # Never a user-supplied identity, so it bypasses auth in every mode.
     if st.session_state.get("user_email") == DEMO_EMAIL:
         return DEMO_EMAIL
 
-    if _oidc_active():
-        if _st_user().is_logged_in:
-            email = _st_user().email.lower().strip()
-            # Only approved emails get a real account; others see the demo.
-            if not _is_allowed(email):
-                _show_not_approved_page(email)
-                st.stop()
-                return ""  # unreachable
-            return email
-        _show_login_page(oidc=True)
-        st.stop()
-        return ""  # unreachable
+    cfg = _auth_config()
+    mode, _ = auth_policy.resolve_auth(**cfg)
 
-    # Local dev fallback
-    if st.session_state.get("user_email"):
-        return st.session_state.user_email
-    _show_login_page(oidc=False)
+    is_logged_in, email = False, ""
+    if mode == auth_policy.AUTH_OIDC:
+        try:
+            user = _st_user()
+            is_logged_in = bool(user.is_logged_in)
+            email = (user.email or "") if is_logged_in else ""
+        except Exception as exc:
+            # The identity lookup itself failed. Fail closed: this is exactly
+            # the case that used to drop through to the typed-email form.
+            _log_auth_problem(f"OIDC identity lookup failed ({type(exc).__name__})")
+            _show_auth_unavailable_page()
+            st.stop()
+            return ""  # unreachable
+    elif mode == auth_policy.AUTH_LOCAL:
+        email = st.session_state.get("user_email") or ""
+        is_logged_in = bool(email)
+
+    result = auth_policy.resolve_identity(
+        **cfg,
+        is_logged_in=is_logged_in,
+        email=email,
+        allowed_raw=_secret("allowed_emails", []),
+        owner_email=_secret("dev_user_email", ""),
+    )
+    if result.reason:
+        _log_auth_problem(result.reason)
+
+    if result.outcome == auth_policy.OUTCOME_ALLOWED:
+        return result.email
+
+    if result.outcome == auth_policy.OUTCOME_NOT_APPROVED:
+        _show_not_approved_page(result.email)
+    elif result.outcome == auth_policy.OUTCOME_LOGIN_REQUIRED:
+        _show_login_page(oidc=result.mode == auth_policy.AUTH_OIDC)
+    else:
+        _show_auth_unavailable_page()
     st.stop()
     return ""  # unreachable
 
@@ -336,30 +523,47 @@ def _is_demo() -> bool:
     return db.get_current_user() == DEMO_EMAIL and not st.session_state.get("demo_admin_toggle")
 
 
+# Columns the app expects beyond the original schema. Checked at startup,
+# never created — see _bootstrap. Each maps to a file in migrations/.
+_REQUIRED_COLUMNS = {
+    ("spots", "fish_count"): "002_spots_fish_count.sql",
+}
+
+
 @st.cache_resource
 def _bootstrap():
-    """Wire up DATABASE_URL from secrets and initialise the engine once.
+    """Wire up DATABASE_URL from secrets and verify the schema once.
 
-    Also applies idempotent schema upgrades (guarded with IF NOT EXISTS, so
-    they are safe to run on every startup and are no-ops once applied).
-    Returns an error string if an upgrade failed (surfaced to the owner in
-    the sidebar), else None — a failure must never be silently swallowed.
+    This used to run `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on every start.
+    That stops working under CR-2: the runtime role is deliberately stripped of
+    DDL rights, so a startup migration would fail on every boot — and a running
+    app quietly altering its own schema is what "controlled migrations" (CR-4)
+    exists to prevent. Schema changes now live in migrations/ and are applied
+    deliberately with the fishing_deploy role.
+
+    Startup only *checks*. Returns an error string naming the missing migration
+    (surfaced to the owner in the sidebar), else None — never silently swallowed.
     """
     import os
+    obs.configure_logging()
     if "database_url" in st.secrets:
         os.environ["DATABASE_URL"] = st.secrets["database_url"]
     try:
-        from sqlalchemy import text
-        with db.get_engine().begin() as conn:
-            # v2026-07: per-spot fish counts for the ×N route-map badge.
-            conn.execute(text(
-                "ALTER TABLE spots ADD COLUMN IF NOT EXISTS fish_count integer"
-            ))
+        from sqlalchemy import inspect as sa_inspect
+        inspector = sa_inspect(db.get_engine())
+        missing = []
+        for (table, column), migration in _REQUIRED_COLUMNS.items():
+            names = {c["name"] for c in inspector.get_columns(table)}
+            if column not in names:
+                missing.append(f"{table}.{column} (run migrations/{migration})")
+        if missing:
+            msg = "Schema is behind: missing " + "; ".join(missing)
+            _auth_log.error("[bootstrap] %s", msg)
+            return msg
     except Exception as exc:
-        # Don't block startup — the app still works for everything except
-        # the migrated feature — but LOG it and tell the owner.
-        msg = f"Schema upgrade failed at startup: {exc}"
-        print(f"[bootstrap] {msg}")
+        # A failed *check* must not take the app down — but say so plainly.
+        msg = f"Could not verify database schema ({type(exc).__name__})"
+        _auth_log.error("[bootstrap] %s", msg)
         return msg
     return None
 
@@ -512,7 +716,7 @@ def page_dashboard():
         years = analytics.available_years()
         year = years[0] if years else None
         monthly = _cached_by_month(user, year, ver)
-        if not monthly.empty:
+        if _chart_ready(monthly, "total_fish"):
             st.caption(f"Season {year}")
             st.altair_chart(
                 alt.Chart(monthly).mark_bar(color=CB_PALETTE[0]).encode(
@@ -521,6 +725,10 @@ def page_dashboard():
                     tooltip=["month", "total_fish", "sessions"],
                 ).properties(height=260, width="container")
             )
+            _chart_data_table(monthly[["month", "sessions", "total_fish"]],
+                              "Fish per month — the numbers")
+        else:
+            st.caption("No monthly totals to chart yet.")
 
     with right:
         st.subheader("Recent trips")
@@ -531,7 +739,7 @@ def page_dashboard():
             big = _fmt_len(getattr(r, "biggest_length", None))
             big_txt = f" · biggest {big}" if big else ""
             with st.container(border=True):
-                st.markdown(f"**{r.date}** · {r.location_name}")
+                st.markdown(f"**{r.date}** · {_plain(r.location_name)}")
                 st.markdown(
                     f"<span class='trip-meta'>{int(r.total_fish)} fish{big_txt}<br>"
                     f"{_html.escape(r.species_list) if r.species_list else 'skunked'}</span>",
@@ -850,7 +1058,12 @@ def _dwr_nudge(sid: int):
 
             def _toggle(_sid=sid, _key=fk):
                 new_val = st.session_state[_key]
-                n = data_entry.set_dwr_filed(_sid, new_val)
+                try:
+                    n = data_entry.set_dwr_filed(_sid, new_val)
+                except data_entry.SaveError as exc:
+                    st.session_state.pop(_key, None)  # revert display to DB value
+                    st.toast(f"⚠️ {exc}", icon="⚠️")
+                    return
                 if n == 0:
                     st.session_state.pop(_key, None)
                     st.toast("⚠️ Could not save — try again.", icon="⚠️")
@@ -1033,6 +1246,11 @@ def page_log_session():
             st.rerun()
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
+        except data_entry.SaveError as exc:
+            # Rolled back — nothing was written, so retrying is safe and will
+            # not create a duplicate trip. Form state is deliberately left
+            # intact so the angler doesn't retype the whole trip.
+            st.error(str(exc), icon="⚠️")
 
     # Show save confirmation + DWR nudge below the form so the form stays
     # ready at the top for the next entry.
@@ -1050,14 +1268,23 @@ def _filter_controls(key_prefix: str):
     locations = [""] + _cached_locations(db.get_current_user(), _cache_ver())
     species_opts = [""] + SPECIES
     c1, c2, c3, c4 = st.columns(4)
+    # Distinct, self-describing labels (CR-9). "From" and "To" alone give a
+    # screen reader two near-identical date fields with no clue what they
+    # bound; read aloud out of visual context they are indistinguishable.
     with c1:
-        date_from = st.date_input("From", value=DEFAULT_FROM_DATE, key=f"{key_prefix}_from")
+        date_from = st.date_input(
+            "Show trips from", value=DEFAULT_FROM_DATE, key=f"{key_prefix}_from",
+            help="Earliest trip date to include.",
+        )
     with c2:
-        date_to = st.date_input("To", value=date.today(), key=f"{key_prefix}_to")
+        date_to = st.date_input(
+            "Show trips until", value=date.today(), key=f"{key_prefix}_to",
+            help="Latest trip date to include.",
+        )
     with c3:
-        location = st.selectbox("Location", locations, key=f"{key_prefix}_loc")
+        location = st.selectbox("Filter by location", locations, key=f"{key_prefix}_loc")
     with c4:
-        species = st.selectbox("Species", species_opts, key=f"{key_prefix}_sp")
+        species = st.selectbox("Filter by species", species_opts, key=f"{key_prefix}_sp")
     return (
         date_from.isoformat() if date_from else None,
         date_to.isoformat() if date_to else None,
@@ -1101,10 +1328,25 @@ def page_browse():
         st.info("No sessions match these filters.")
         return
 
-    sessions = list(df.itertuples())
-    ids = [int(r.id) for r in sessions]
+    all_rows = list(df.itertuples())
+    ids = [int(r.id) for r in all_rows]
     if st.session_state.get("browse_sel") not in ids:
         st.session_state["browse_sel"] = ids[0]
+
+    # Paginate: a 500-trip account rendered every card on every run, and each
+    # card is a column block with its own markdown (CR-5). The filters above
+    # remain the way to search across everything — this only bounds how much
+    # is drawn at once.
+    total_pages = max(1, -(-len(all_rows) // BROWSE_PAGE_SIZE))  # ceil
+    page = 1
+    if total_pages > 1:
+        page = st.number_input(
+            f"Page (showing {BROWSE_PAGE_SIZE} of {len(all_rows)} trips)",
+            min_value=1, max_value=total_pages, value=1, step=1,
+            key="browse_page",
+        )
+    start = (int(page) - 1) * BROWSE_PAGE_SIZE
+    sessions = all_rows[start:start + BROWSE_PAGE_SIZE]
 
     for i in range(0, len(sessions), 2):  # 2 cards per row
         cols = st.columns(2)
@@ -1112,10 +1354,14 @@ def page_browse():
             with cols[j]:
                 _trip_card(r)
 
+    if total_pages > 1:
+        st.caption(f"Page {int(page)} of {total_pages} · {len(all_rows)} trips match "
+                   "these filters. Narrow the filters above to find a specific trip.")
+
     st.divider()
     detail = search.get_session(st.session_state["browse_sel"])
     if detail:
-        st.subheader(f"Trip detail — {detail['date']} · {detail['location_name']}")
+        st.subheader(f"Trip detail — {detail['date']} · {_plain(detail['location_name'])}")
         _render_session_detail(detail, st.session_state["browse_sel"])
 
 
@@ -1136,10 +1382,14 @@ def _render_session_detail(detail: dict, sid: int):
                     icon="📋",
                 )
                 if st.button("Marked as filed by mistake? Unmark", key=f"unfile_{sid}"):
-                    data_entry.set_dwr_filed(sid, False)
-                    st.session_state.pop(f"dwr_filed_{sid}", None)
-                    _refresh()
-                    st.rerun()
+                    try:
+                        data_entry.set_dwr_filed(sid, False)
+                    except data_entry.SaveError as exc:
+                        st.error(str(exc), icon="⚠️")
+                    else:
+                        st.session_state.pop(f"dwr_filed_{sid}", None)
+                        _refresh()
+                        st.rerun()
             skey = f"edit_spots_{sid}"
             if skey not in st.session_state:
                 st.session_state[skey] = [
@@ -1154,21 +1404,21 @@ def _render_session_detail(detail: dict, sid: int):
     left, right = st.columns(2)
     with left:
         st.write(f"**Date:** {detail['date']}")
-        st.write(f"**Location:** {detail['location_name']}")
+        st.write(f"**Location:** {_plain(detail['location_name'])}")
         st.write(f"**Time:** {detail.get('start_time')} – {detail.get('end_time')} "
                  f"({detail.get('hours_fished')} h)")
         st.write(f"**Spots:** {len(detail_spots)}"
                  + (f" · {sum(bool(s.get('caught')) for s in detail_spots)} with fish"
                     if detail_spots else ""))
     with right:
-        st.write(f"**Weather:** {detail.get('weather')}")
+        st.write(f"**Weather:** {_plain(detail.get('weather'))}")
         st.write(f"**Air / Water:** {detail.get('air_temp')}° / {detail.get('water_temp')}°")
-        st.write(f"**Bait/Lure:** {detail.get('bait_lure')}")
+        st.write(f"**Bait/Lure:** {_plain(detail.get('bait_lure'))}")
         st.write(f"**Style:** {detail.get('fishing_style') or 'n/a'}")
         st.write(f"**Anglers:** {detail.get('num_anglers') or 1}")
         st.write(f"**Total fish:** {detail['total_fish']}")
         if detail.get("moon_phase"):
-            st.write(f"**Moon:** {detail['moon_phase']}")
+            st.write(f"**Moon:** {_plain(detail['moon_phase'])}")
     if detail["fish"]:
         fish_df = pd.DataFrame(detail["fish"])
         fish_df = fish_df.rename(columns={
@@ -1188,7 +1438,7 @@ def _render_session_detail(detail: dict, sid: int):
             )
         st.table(fish_df)
     if detail.get("notes"):
-        st.info(detail["notes"])
+        st.info(_plain(detail["notes"]))
 
     # DWR Striped Bass Angler Journal — pre-filled Google Form for this outing.
     report = dwr_report.summarize(detail)
@@ -1218,7 +1468,12 @@ def _render_session_detail(detail: dict, sid: int):
                 st.session_state[fk] = False
 
             def _toggle_filed(_sid=sid, _key=fk):
-                n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+                try:
+                    n = data_entry.set_dwr_filed(_sid, st.session_state[_key])
+                except data_entry.SaveError as exc:
+                    st.session_state.pop(_key, None)  # revert display to DB value
+                    st.toast(f"⚠️ {exc}", icon="⚠️")
+                    return
                 if n == 0:
                     st.session_state.pop(_key, None)  # revert display to DB value
                     st.toast("⚠️ DWR status could not be saved — try again.", icon="⚠️")
@@ -1256,7 +1511,13 @@ def _render_session_detail(detail: dict, sid: int):
             )
             c_yes, c_no = st.columns([1, 1])
             if c_yes.button("Yes — delete permanently", type="primary", key=f"del_yes_{sid}"):
-                data_entry.delete_session(sid)
+                try:
+                    data_entry.delete_session(sid)
+                except data_entry.SaveError as exc:
+                    # Rolled back — the trip is still there. Leave the confirm
+                    # armed so they can retry without re-arming it.
+                    st.error(str(exc), icon="⚠️")
+                    st.stop()
                 _refresh()
                 st.session_state.pop(arm_key, None)
                 st.session_state.pop("browse_sel", None)
@@ -1389,6 +1650,10 @@ def _edit_form(detail: dict):
             st.rerun()
         except data_entry.ValidationError as exc:
             st.error(f"Could not save: {exc}")
+        except data_entry.SaveError as exc:
+            # Rolled back — the original trip, its fish and its spots are all
+            # still intact. Retrying is safe.
+            st.error(str(exc), icon="⚠️")
 
 
 def _render_whats_working():
@@ -1439,6 +1704,124 @@ def _render_whats_working():
         )
 
 
+def page_privacy():
+    """Privacy & Data (CR-8).
+
+    Written from what the code actually does, not from a template. Two details
+    that a generic policy would miss and that matter here: exact coordinates
+    are stored and exported, and there is no server-side backup — the ZIP the
+    angler downloads is the only copy that can bring their trips back.
+
+    Set a `privacy_contact` secret to publish a contact address; the owner's
+    dev_user_email is deliberately NOT shown, since this page is public.
+    """
+    st.header("🔒 Privacy & Your Data")
+    st.caption("What this app stores, who can see it, and what happens if you leave.")
+
+    st.subheader("The short version")
+    st.markdown(
+        "- Your trips are **private to your account**. Other members cannot see them.\n"
+        "- The app stores the **exact coordinates** of your fishing spots.\n"
+        "- The person who runs this app **can see all data**, including yours.\n"
+        "- **There is no server-side backup.** If your data is deleted, only a "
+        "backup ZIP you downloaded yourself can bring it back."
+    )
+
+    st.subheader("Where your data lives")
+    st.markdown(
+        "- **Supabase** hosts the database holding every trip, fish, and map pin.\n"
+        "- **Streamlit Community Cloud** runs the app itself.\n"
+        "\n"
+        "Both are third-party services with their own privacy terms. Neither is "
+        "operated by the person running this fishing log."
+    )
+
+    st.subheader("What leaves your browser")
+    st.markdown(
+        "- **Map tiles** are fetched from **OpenStreetMap** whenever you open a "
+        "map. Their servers can see the map area you are looking at.\n"
+        "- **Signing in** goes through **Google**. The app receives your email "
+        "address; it never sees your Google password.\n"
+        "- **The \"use my location\" button** asks your device for its GPS "
+        "position. Your browser will prompt first, and you can decline — you "
+        "can always drop pins on the map by hand instead.\n"
+        "- **Filing a DWR report** opens a **Google Form** run by the Virginia "
+        "Department of Wildlife Resources, pre-filled with that trip's details. "
+        "Nothing is submitted until you press Submit on their form. The app "
+        "does not fill in your email — Google supplies it from the account you "
+        "are signed into. What DWR does with a submitted report is governed by "
+        "their policy, not this app's."
+    )
+
+    st.subheader("Fishing spots are stored exactly")
+    st.markdown(
+        "Every pin you drop is saved as a precise latitude and longitude, not a "
+        "rounded or approximate area. That is what makes the route map and the "
+        "catch heatmap work.\n\n"
+        "Those exact coordinates are included in **every export and backup file** "
+        "you download. If you share a backup ZIP or a CSV with someone, you are "
+        "sharing your fishing spots with them. There is no setting to blur or "
+        "round them."
+    )
+
+    st.subheader("Who can access your data")
+    st.markdown(
+        "- **You**, when signed in.\n"
+        "- **The app owner**, who holds the database credentials and can "
+        "therefore read, change, or delete any account's data. This is not a "
+        "special feature — it is what running the database means.\n"
+        "- **Supabase and Streamlit staff**, to the extent their own terms allow.\n"
+        "\n"
+        "Accounts are **approval-only**: signing in with Google is not enough, "
+        "the owner has to add your address to the approved list first. Everyone "
+        "else sees the read-only demo."
+    )
+
+    st.subheader("Keeping and deleting your data")
+    st.markdown(
+        "- Trips are kept **until you delete them**. Nothing expires or is "
+        "removed automatically.\n"
+        "- **Delete one trip** from Browse & Search — that removes its fish and "
+        "route pins too.\n"
+        "- **Delete everything** from the sidebar under *⚠️ Clear my data*. It "
+        "makes you download a backup first, on purpose.\n"
+        "- Deletion is **immediate and permanent**. There is no undo, no bin to "
+        "recover from, and no snapshot to roll back to.\n"
+        "- A DWR report you already submitted is **held by the state**, not by "
+        "this app. Deleting the trip here does not withdraw it."
+    )
+
+    st.subheader("Backups are your responsibility")
+    st.warning(
+        "**No copy of your trips is kept anywhere you can reach.** If the "
+        "database is lost, or you delete something by mistake, the only way "
+        "back is a backup ZIP you downloaded yourself.\n\n"
+        "Download one from **Export** every month or so and keep it somewhere "
+        "safe.",
+        icon="⚠️",
+    )
+
+    contact = _secret("privacy_contact", "")
+    if contact:
+        st.subheader("Questions")
+        st.markdown(
+            f"Ask the person who runs this app: **{contact}**. They can remove "
+            "your account and its data on request."
+        )
+    else:
+        st.subheader("Questions")
+        st.caption(
+            "Contact whoever set this app up for your club — they can remove "
+            "your account and its data on request."
+        )
+
+    st.divider()
+    st.caption(
+        "This page describes how the app behaves. It is not a legal document, "
+        "and it is not legal advice."
+    )
+
+
 def page_analytics():
     st.header("📊 Analytics")
     if analytics.overall_stats()["sessions"] == 0:
@@ -1448,14 +1831,22 @@ def page_analytics():
     years = analytics.available_years()
     year = st.selectbox("Year", years, index=0) if years else None
 
-    tab_month, tab_sizes, tab_best, tab_work = st.tabs(
-        ["Monthly", "Sizes", "Personal Bests", "What's working"]
+    # A selector, not st.tabs. Streamlit computes every tab body on every run
+    # even though three of the four are hidden, so the old layout built all
+    # four sections — tables, charts and their queries — to show one (CR-5).
+    # A radio also announces itself properly to a screen reader, which the tab
+    # strip did not.
+    section = st.radio(
+        "Analytics section",
+        ["Monthly", "Sizes", "Personal Bests", "What's working"],
+        horizontal=True,
+        key="analytics_section",
     )
 
-    with tab_work:
+    if section == "What's working":
         _render_whats_working()
 
-    with tab_month:
+    elif section == "Monthly":
         tbl = analytics.by_month(year)
         if tbl.empty:
             st.info("No data for this year.")
@@ -1466,25 +1857,32 @@ def page_analytics():
             st.dataframe(tbl, use_container_width=True, hide_index=True)
 
             st.subheader("Fish caught per month")
-            st.altair_chart(
-                alt.Chart(chart_df).mark_bar(color="#1a9850").encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("total_fish:Q", title="Fish caught"),
-                    tooltip=["month", "total_fish", "sessions", "success_rate"],
-                ).properties(height=320, width="container")
-            )
+            if _chart_ready(chart_df, "total_fish"):
+                st.altair_chart(
+                    alt.Chart(chart_df).mark_bar(color="#1a9850").encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("total_fish:Q", title="Fish caught"),
+                        tooltip=["month", "total_fish", "sessions", "success_rate"],
+                    ).properties(height=320, width="container")
+                )
+            else:
+                st.caption("Nothing to chart for this year — the table above has "
+                           "the full picture.")
 
             st.subheader("Success rate by month (%)")
-            st.altair_chart(
-                alt.Chart(chart_df).mark_line(point=True, color="#2c7fb8").encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("success_rate:Q", title="Success rate %",
-                            scale=alt.Scale(domain=[0, 100])),
-                    tooltip=["month", "success_rate", "sessions_with_fish", "sessions"],
-                ).properties(height=280, width="container")
-            )
+            if _chart_ready(chart_df, "success_rate"):
+                st.altair_chart(
+                    alt.Chart(chart_df).mark_line(point=True, color="#2c7fb8").encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("success_rate:Q", title="Success rate %",
+                                scale=alt.Scale(domain=[0, 100])),
+                        tooltip=["month", "success_rate", "sessions_with_fish", "sessions"],
+                    ).properties(height=280, width="container")
+                )
+            else:
+                st.caption("No success rates recorded for this year yet.")
 
-    with tab_sizes:
+    elif section == "Sizes":
         sizes = analytics.size_by_month(year)
         if sizes.empty:
             st.info("No size data yet — add length/weight when logging fish.")
@@ -1495,20 +1893,24 @@ def page_analytics():
                 id_vars="month", value_vars=["avg_length", "max_length"],
                 var_name="metric", value_name="inches",
             )
-            st.altair_chart(
-                alt.Chart(melted).mark_line(point=True).encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("inches:Q", title="Length (in)"),
-                    color=alt.Color("metric:N", title="",
-                                    scale=alt.Scale(range=CB_PALETTE[:2])),
-                    tooltip=["month", "metric", "inches"],
-                ).properties(height=300, width="container")
-            )
+            if _chart_ready(melted, "inches"):
+                st.altair_chart(
+                    alt.Chart(melted).mark_line(point=True).encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("inches:Q", title="Length (in)"),
+                        color=alt.Color("metric:N", title="",
+                                        scale=alt.Scale(range=CB_PALETTE[:2])),
+                        tooltip=["month", "metric", "inches"],
+                    ).properties(height=300, width="container")
+                )
+            else:
+                st.caption("No measured lengths this year — the table above lists "
+                           "what was recorded.")
 
             st.subheader("Length distribution (in)")
             fish = analytics.fish_sizes(year)
             fish = fish[fish["length"] > 0] if not fish.empty else fish
-            if fish.empty:
+            if not _chart_ready(fish, "length"):
                 st.caption("No measured lengths yet.")
             else:
                 st.altair_chart(
@@ -1518,8 +1920,18 @@ def page_analytics():
                         tooltip=[alt.Tooltip("count()", title="fish")],
                     ).properties(height=300, width="container")
                 )
+                # Text alternative: the histogram is otherwise unreadable to a
+                # screen reader and to anyone who cannot see the bar heights.
+                buckets = (
+                    fish.assign(band=(fish["length"] // 2 * 2).astype(int))
+                        .groupby("band").size().reset_index(name="fish")
+                )
+                buckets["Length band (in)"] = buckets["band"].map(
+                    lambda b: f"{b}–{b + 2}")
+                _chart_data_table(buckets[["Length band (in)", "fish"]],
+                                  "Length distribution — the numbers")
 
-    with tab_best:
+    elif section == "Personal Bests":
         best = analytics.personal_bests()
         if best.empty:
             st.info("No fish recorded yet.")
@@ -1622,7 +2034,9 @@ def page_backup():
             st.markdown("**Sessions** — one row per trip")
             st.download_button(
                 "⬇ Sessions CSV",
-                sessions_df.to_csv(index=False).encode("utf-8"),
+                # to_safe_csv, not to_csv: these open straight into Excel and
+                # Google Sheets, so a note beginning '=' would be executed.
+                backup_io.to_safe_csv(sessions_df).encode("utf-8"),
                 file_name="fishing_sessions.csv", mime="text/csv",
                 disabled=sessions_df.empty, use_container_width=True,
             )
@@ -1630,7 +2044,7 @@ def page_backup():
             st.markdown("**Fish** — one row per fish caught")
             st.download_button(
                 "⬇ Fish CSV",
-                fish_df.to_csv(index=False).encode("utf-8"),
+                backup_io.to_safe_csv(fish_df).encode("utf-8"),
                 file_name="fishing_fish.csv", mime="text/csv",
                 disabled=fish_df.empty, use_container_width=True,
             )
@@ -1643,25 +2057,53 @@ def page_backup():
         return
     st.caption(
         "Upload a backup ZIP (or just its backup.json) to load those trips back "
-        "into your account. Trips that already exist (same date, start time, and "
-        "location) are skipped unless you say otherwise."
+        "into your account. You'll see exactly what will happen before anything "
+        "is written."
     )
     up = st.file_uploader("Backup file", type=["zip", "json"], key="restore_file")
     skip_dupes = st.checkbox("Skip trips I already have (recommended)", value=True)
-    if up is not None and st.button("↩️ Restore trips", type="primary"):
-        try:
-            data = backup_io.parse_backup(up.getvalue())
-        except ValueError as exc:
-            st.error(str(exc))
-        else:
-            result = backup_io.restore_backup(data, skip_duplicates=skip_dupes)
-            _refresh()
-            st.success(
-                f"Restore complete — **{result['restored']} trip(s) restored**, "
-                f"{result['skipped']} skipped as duplicates."
-            )
-            for msg in result["errors"]:
-                st.warning(msg)
+
+    if up is None:
+        return
+
+    # Parse and preview on every rerun. Nothing here touches the database's
+    # contents — restore only happens when the button below is pressed, so the
+    # angler decides with the real numbers in front of them (CR-7).
+    try:
+        data = backup_io.parse_backup(up.getvalue())
+    except ValueError as exc:
+        st.error(str(exc), icon="🚫")
+        return
+
+    plan = backup_io.preview_restore(data, skip_duplicates=skip_dupes)
+
+    st.markdown("**Before you restore**")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Trips in file", plan["total"])
+    p2.metric("Will be added", plan["to_restore"])
+    p3.metric("Already have", plan["duplicates"])
+    st.caption(
+        f"Adds {plan['fish']} fish and {plan['spots']} route pin(s). "
+        + (f"Duplicates matched by {plan['matched_by']}."
+           if plan["duplicates"] else "No duplicates found.")
+    )
+    for msg in plan["warnings"]:
+        st.warning(msg, icon="⚠️")
+
+    if plan["to_restore"] == 0:
+        st.info("Nothing to add — every trip in this file is already in your log.",
+                icon="ℹ️")
+        return
+
+    if st.button(f"↩️ Restore {plan['to_restore']} trip(s)", type="primary"):
+        result = backup_io.restore_backup(data, skip_duplicates=skip_dupes)
+        _refresh()
+        st.success(
+            f"Restore complete — **{result['restored']} trip(s) restored**, "
+            f"{result['skipped']} skipped as duplicates."
+        )
+        for msg in result["errors"]:
+            st.warning(msg)
 
 
 _MOON_EMOJI = {
@@ -1848,6 +2290,7 @@ def main():
         demo_admin = st.sidebar.toggle("🛠 Edit demo data", key="demo_admin_toggle")
         if demo_admin:
             db.set_current_user(DEMO_EMAIL)
+        _owner_health_panel()
         with st.sidebar.expander("🩺 DWR form health check"):
             st.caption("Fetches the DWR Google Form and verifies every hardcoded "
                        "entry ID still exists — run after any DWR form change.")
@@ -1874,7 +2317,13 @@ def main():
         st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
         st.session_state.pop("user_email", None)
-        if _oidc_active() and _st_user().is_logged_in:
+        signed_in_via_oidc = False
+        if _oidc_active():
+            try:
+                signed_in_via_oidc = bool(_st_user().is_logged_in)
+            except Exception:
+                signed_in_via_oidc = False  # nothing to clear; just rerun
+        if signed_in_via_oidc:
             st.logout()  # clears OIDC cookie and redirects
         else:
             st.rerun()
@@ -1891,7 +2340,7 @@ def main():
     page = st.sidebar.radio(
         "Navigate",
         ["Dashboard", "Log a Session", "Browse & Search", "Analytics",
-         "Calendar", "Map", "Export"],
+         "Calendar", "Map", "Export", "Privacy & Data"],
     )
 
     _hero_banner()
@@ -1938,6 +2387,7 @@ def main():
         "Calendar": page_calendar,
         "Map": page_map,
         "Export": page_backup,
+        "Privacy & Data": page_privacy,
     }[page]()
 
     guide = _user_guide_bytes()
