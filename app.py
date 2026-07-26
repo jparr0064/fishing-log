@@ -1750,7 +1750,9 @@ def page_backup():
             st.markdown("**Sessions** — one row per trip")
             st.download_button(
                 "⬇ Sessions CSV",
-                sessions_df.to_csv(index=False).encode("utf-8"),
+                # to_safe_csv, not to_csv: these open straight into Excel and
+                # Google Sheets, so a note beginning '=' would be executed.
+                backup_io.to_safe_csv(sessions_df).encode("utf-8"),
                 file_name="fishing_sessions.csv", mime="text/csv",
                 disabled=sessions_df.empty, use_container_width=True,
             )
@@ -1758,7 +1760,7 @@ def page_backup():
             st.markdown("**Fish** — one row per fish caught")
             st.download_button(
                 "⬇ Fish CSV",
-                fish_df.to_csv(index=False).encode("utf-8"),
+                backup_io.to_safe_csv(fish_df).encode("utf-8"),
                 file_name="fishing_fish.csv", mime="text/csv",
                 disabled=fish_df.empty, use_container_width=True,
             )
@@ -1771,25 +1773,53 @@ def page_backup():
         return
     st.caption(
         "Upload a backup ZIP (or just its backup.json) to load those trips back "
-        "into your account. Trips that already exist (same date, start time, and "
-        "location) are skipped unless you say otherwise."
+        "into your account. You'll see exactly what will happen before anything "
+        "is written."
     )
     up = st.file_uploader("Backup file", type=["zip", "json"], key="restore_file")
     skip_dupes = st.checkbox("Skip trips I already have (recommended)", value=True)
-    if up is not None and st.button("↩️ Restore trips", type="primary"):
-        try:
-            data = backup_io.parse_backup(up.getvalue())
-        except ValueError as exc:
-            st.error(str(exc))
-        else:
-            result = backup_io.restore_backup(data, skip_duplicates=skip_dupes)
-            _refresh()
-            st.success(
-                f"Restore complete — **{result['restored']} trip(s) restored**, "
-                f"{result['skipped']} skipped as duplicates."
-            )
-            for msg in result["errors"]:
-                st.warning(msg)
+
+    if up is None:
+        return
+
+    # Parse and preview on every rerun. Nothing here touches the database's
+    # contents — restore only happens when the button below is pressed, so the
+    # angler decides with the real numbers in front of them (CR-7).
+    try:
+        data = backup_io.parse_backup(up.getvalue())
+    except ValueError as exc:
+        st.error(str(exc), icon="🚫")
+        return
+
+    plan = backup_io.preview_restore(data, skip_duplicates=skip_dupes)
+
+    st.markdown("**Before you restore**")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("Trips in file", plan["total"])
+    p2.metric("Will be added", plan["to_restore"])
+    p3.metric("Already have", plan["duplicates"])
+    st.caption(
+        f"Adds {plan['fish']} fish and {plan['spots']} route pin(s). "
+        + (f"Duplicates matched by {plan['matched_by']}."
+           if plan["duplicates"] else "No duplicates found.")
+    )
+    for msg in plan["warnings"]:
+        st.warning(msg, icon="⚠️")
+
+    if plan["to_restore"] == 0:
+        st.info("Nothing to add — every trip in this file is already in your log.",
+                icon="ℹ️")
+        return
+
+    if st.button(f"↩️ Restore {plan['to_restore']} trip(s)", type="primary"):
+        result = backup_io.restore_backup(data, skip_duplicates=skip_dupes)
+        _refresh()
+        st.success(
+            f"Restore complete — **{result['restored']} trip(s) restored**, "
+            f"{result['skipped']} skipped as duplicates."
+        )
+        for msg in result["errors"]:
+            st.warning(msg)
 
 
 _MOON_EMOJI = {

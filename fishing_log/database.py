@@ -6,6 +6,7 @@ the top of each Streamlit script run (in main()) before any DB operations.
 from __future__ import annotations
 
 import os
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -147,13 +148,45 @@ SESSION_FIELDS = (
 # genuinely only write one thing.
 
 
-def insert_session_tx(conn, session: dict) -> int:
-    """Insert one session on an existing transaction; return its new id."""
+# Whether sessions.trip_uuid exists (migrations/003_trip_uuid.sql). Cached per
+# engine so the app works either side of that migration without paying for an
+# inspector round trip on every write. Keyed by engine identity so the test
+# suite, which swaps in a fresh engine per test, is not poisoned by the cache.
+_trip_uuid_support: dict = {}
+
+
+def has_trip_uuid_column() -> bool:
+    """True when sessions.trip_uuid is present."""
+    engine = get_engine()
+    key = id(engine)
+    if key not in _trip_uuid_support:
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            columns = {c["name"] for c in sa_inspect(engine).get_columns("sessions")}
+            _trip_uuid_support[key] = "trip_uuid" in columns
+        except Exception:
+            _trip_uuid_support[key] = False
+    return _trip_uuid_support[key]
+
+
+def insert_session_tx(conn, session: dict, trip_uuid: Optional[str] = None) -> int:
+    """Insert one session on an existing transaction; return its new id.
+
+    ``trip_uuid`` is the stable identifier used to make restore idempotent. A
+    new trip gets a fresh one; a restored trip reuses the id from the backup so
+    restoring twice does not duplicate it. Skipped entirely when the column is
+    absent, so this works before migration 003 has been applied.
+    """
     fields = ("user_email",) + SESSION_FIELDS
-    cols = ", ".join(fields)
-    placeholders = ", ".join(f":{f}" for f in fields)
     params: dict = {"user_email": get_current_user()}
     params.update({f: session.get(f) for f in SESSION_FIELDS})
+
+    if has_trip_uuid_column():
+        fields = fields + ("trip_uuid",)
+        params["trip_uuid"] = trip_uuid or str(uuid.uuid4())
+
+    cols = ", ".join(fields)
+    placeholders = ", ".join(f":{f}" for f in fields)
     result = conn.execute(
         text(f"INSERT INTO sessions ({cols}) VALUES ({placeholders}) RETURNING id"),
         params,

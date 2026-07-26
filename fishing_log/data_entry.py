@@ -293,12 +293,22 @@ def validate_spots(spots: List[dict]) -> List[dict]:
 
 
 def add_session(
-    session: dict, fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None
+    session: dict,
+    fish: Optional[List[dict]] = None,
+    spots: Optional[List[dict]] = None,
+    *,
+    dwr_filed_at: Optional[str] = None,
+    trip_uuid: Optional[str] = None,
 ) -> int:
     """Validate and persist a session, its fish, and its map spots. Returns new id.
 
-    All three inserts share one transaction: a failure on the fish or the spots
-    rolls the session back too, so a half-saved trip cannot reach the database.
+    Everything shares one transaction: a failure on the fish or the spots rolls
+    the session back too, so a half-saved trip cannot reach the database.
+
+    ``dwr_filed_at`` and ``trip_uuid`` exist for restore (CR-7). Both used to be
+    applied in a follow-up UPDATE after the trip had already been committed,
+    which meant a trip could land without its filed date or its stable id. They
+    are now part of the same transaction.
     """
     cleaned = validate_session(session)
     cleaned_fish = validate_fish(fish or [])
@@ -308,9 +318,17 @@ def add_session(
         cleaned["longitude"] = cleaned_spots[0]["lon"]
 
     with _atomic("add_session", fish=len(cleaned_fish), spots=len(cleaned_spots)) as conn:
-        session_id = db.insert_session_tx(conn, cleaned)
+        session_id = db.insert_session_tx(conn, cleaned, trip_uuid=trip_uuid)
         db.insert_fish_tx(conn, session_id, cleaned_fish)
         db.insert_spots_tx(conn, session_id, cleaned_spots)
+        if dwr_filed_at and cleaned.get("dwr_filed"):
+            from sqlalchemy import text
+            conn.execute(
+                text("UPDATE sessions SET dwr_filed_at = :d "
+                     "WHERE id = :id AND user_email = :email"),
+                {"d": str(dwr_filed_at)[:10], "id": session_id,
+                 "email": db.get_current_user()},
+            )
     return session_id
 
 
