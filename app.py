@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import calendar as _cal
 import html as _html
+import logging
 import os
 from datetime import date, datetime
 
@@ -19,7 +20,8 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from fishing_log import (
-    analytics, backup_io, data_entry, database as db, dwr_report, map_view, search,
+    analytics, auth_policy, backup_io, data_entry, database as db, dwr_report,
+    map_view, search,
 )
 
 # Optional GPS button component; app still works if it isn't installed.
@@ -204,19 +206,63 @@ SESSION_DISPLAY_COLS = {
 }
 
 
-def _oidc_active() -> bool:
-    """True when OIDC auth (st.login/st.user) is configured and usable.
+_auth_log = logging.getLogger("fishing_log.auth")
 
-    Accessing st.user.is_logged_in raises unless an [auth] block is configured
-    in secrets, and st.user may not exist on older Streamlit builds. Treat ANY
-    failure as "not active" and fall back to the local email form — otherwise
-    the whole app crashes on load (as it did on Streamlit Cloud without [auth]).
+
+def _log_auth_problem(message: str) -> None:
+    """Record an auth configuration failure.
+
+    Only ever passed strings this module composed itself — never a secret value
+    and never a raw exception message, which can carry connection strings or
+    tokens. Exception paths log the type name only.
+    """
+    _auth_log.error("[auth] %s", message)
+
+
+def _secret(name: str, default=""):
+    """Read a secret, tolerating a missing or unreadable secrets.toml."""
+    try:
+        return st.secrets.get(name, default)
+    except Exception:
+        return default
+
+
+def _oidc_configured() -> bool:
+    """True when an [auth] block is present in secrets.
+
+    Deliberately a *configuration* check rather than a runtime probe. The
+    previous version called st.user.is_logged_in inside a try/except and read
+    any exception as "no OIDC", which silently downgraded production to the
+    typed-email form. Configuration is a fact we can read; a probe is not.
     """
     try:
-        _ = _st_user().is_logged_in
-        return True
+        auth = st.secrets.get("auth", None)
     except Exception:
         return False
+    if not auth:
+        return False
+    try:
+        return bool(dict(auth))
+    except Exception:
+        return True
+
+
+def _auth_config() -> dict:
+    """Auth configuration: secrets first, environment variable as fallback.
+
+    Streamlit Cloud supplies settings through secrets; a container host is more
+    likely to use env vars. Support both rather than forcing one.
+    """
+    return {
+        "app_env": _secret("app_env", os.environ.get("APP_ENV", "")),
+        "auth_mode": _secret("auth_mode", os.environ.get("AUTH_MODE", "")),
+        "oidc_configured": _oidc_configured(),
+    }
+
+
+def _oidc_active() -> bool:
+    """True when this deployment requires Google sign-in."""
+    return auth_policy.resolve_auth(**_auth_config())[0] == auth_policy.AUTH_OIDC
 
 
 def _st_user():
@@ -266,19 +312,34 @@ def _allowed_emails() -> set:
     string). If it's absent, only the owner (`dev_user_email`) can sign in —
     a safe default until you add people.
     """
-    raw = st.secrets.get("allowed_emails", [])
-    if isinstance(raw, str):
-        raw = raw.split(",")
-    allowed = {str(e).strip().lower() for e in raw if e and str(e).strip()}
-    owner = str(st.secrets.get("dev_user_email", "")).strip().lower()
-    if owner:
-        allowed.add(owner)
-    return allowed
+    return auth_policy.allowed_emails(
+        _secret("allowed_emails", []), _secret("dev_user_email", "")
+    )
 
 
 def _is_allowed(email: str) -> bool:
     """Whether this signed-in email may have a real account (approval list)."""
-    return email.lower().strip() in _allowed_emails()
+    return auth_policy.is_allowed(
+        email, _secret("allowed_emails", []), _secret("dev_user_email", "")
+    )
+
+
+def _show_auth_unavailable_page() -> None:
+    """Production auth is unusable — admit nobody, and reveal nothing.
+
+    Reached when OIDC is required but unconfigured, or when the identity
+    lookup itself fails. Deliberately offers no way in: no email form, and no
+    detail a visitor could use to infer the misconfiguration.
+    """
+    st.markdown("## 🎣 Fishing Log")
+    st.error(
+        "**Sign-in is temporarily unavailable.**\n\n"
+        "The app can't verify accounts right now, so it isn't letting anyone "
+        "in. This is a configuration problem on our end, not something you "
+        "did — please try again later.",
+        icon="🔒",
+    )
+    st.caption("Owner: check the server log for `[auth]` entries.")
 
 
 def _show_not_approved_page(email: str) -> None:
@@ -297,34 +358,56 @@ def _show_not_approved_page(email: str) -> None:
 
 
 def _get_user_email() -> str:
-    """Return the current user's email, or stop to show the login screen.
+    """Return the current user's email, or stop to show a login/error screen.
 
-    Three modes:
-    - Demo: session_state["user_email"] == DEMO_EMAIL (bypasses auth in all modes)
-    - OIDC (production): [auth] is configured in secrets.toml → use st.login/st.user
-    - Local dev: no OIDC configured → plain email form
+    Configuration decides the route; ``auth_policy`` decides the outcome. The
+    typed-email form appears only when the deployment declares itself
+    development *and* selects local auth — never as a fallback from a failure.
     """
-    # Demo shortcut — works regardless of auth mode
+    # Demo shortcut — a fixed read-only account, set only by the demo button.
+    # Never a user-supplied identity, so it bypasses auth in every mode.
     if st.session_state.get("user_email") == DEMO_EMAIL:
         return DEMO_EMAIL
 
-    if _oidc_active():
-        if _st_user().is_logged_in:
-            email = _st_user().email.lower().strip()
-            # Only approved emails get a real account; others see the demo.
-            if not _is_allowed(email):
-                _show_not_approved_page(email)
-                st.stop()
-                return ""  # unreachable
-            return email
-        _show_login_page(oidc=True)
-        st.stop()
-        return ""  # unreachable
+    cfg = _auth_config()
+    mode, _ = auth_policy.resolve_auth(**cfg)
 
-    # Local dev fallback
-    if st.session_state.get("user_email"):
-        return st.session_state.user_email
-    _show_login_page(oidc=False)
+    is_logged_in, email = False, ""
+    if mode == auth_policy.AUTH_OIDC:
+        try:
+            user = _st_user()
+            is_logged_in = bool(user.is_logged_in)
+            email = (user.email or "") if is_logged_in else ""
+        except Exception as exc:
+            # The identity lookup itself failed. Fail closed: this is exactly
+            # the case that used to drop through to the typed-email form.
+            _log_auth_problem(f"OIDC identity lookup failed ({type(exc).__name__})")
+            _show_auth_unavailable_page()
+            st.stop()
+            return ""  # unreachable
+    elif mode == auth_policy.AUTH_LOCAL:
+        email = st.session_state.get("user_email") or ""
+        is_logged_in = bool(email)
+
+    result = auth_policy.resolve_identity(
+        **cfg,
+        is_logged_in=is_logged_in,
+        email=email,
+        allowed_raw=_secret("allowed_emails", []),
+        owner_email=_secret("dev_user_email", ""),
+    )
+    if result.reason:
+        _log_auth_problem(result.reason)
+
+    if result.outcome == auth_policy.OUTCOME_ALLOWED:
+        return result.email
+
+    if result.outcome == auth_policy.OUTCOME_NOT_APPROVED:
+        _show_not_approved_page(result.email)
+    elif result.outcome == auth_policy.OUTCOME_LOGIN_REQUIRED:
+        _show_login_page(oidc=result.mode == auth_policy.AUTH_OIDC)
+    else:
+        _show_auth_unavailable_page()
     st.stop()
     return ""  # unreachable
 
@@ -1874,7 +1957,13 @@ def main():
         st.sidebar.caption(f"Signed in as **{user_email}**")
     if st.sidebar.button("Sign out"):
         st.session_state.pop("user_email", None)
-        if _oidc_active() and _st_user().is_logged_in:
+        signed_in_via_oidc = False
+        if _oidc_active():
+            try:
+                signed_in_via_oidc = bool(_st_user().is_logged_in)
+            except Exception:
+                signed_in_via_oidc = False  # nothing to clear; just rerun
+        if signed_in_via_oidc:
             st.logout()  # clears OIDC cookie and redirects
         else:
             st.rerun()
