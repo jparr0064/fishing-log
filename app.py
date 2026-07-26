@@ -55,6 +55,62 @@ BROWSE_PAGE_SIZE = 20
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
 
 
+# Markdown metacharacters. Backslash-escaping is invisible in the rendered
+# output (CommonMark drops the backslash), so this changes nothing a user sees
+# except that their text is no longer interpreted.
+_MD_SPECIAL = "\\`*_{}[]()#+-.!|>~"
+
+
+def _plain(value) -> str:
+    """User-authored text, made safe for a Markdown renderer (CR-9).
+
+    st.markdown / st.write / st.info all parse Markdown, so a location name of
+    `**Secret Spot**` renders bold and a trip note of `[free lures](http://…)`
+    becomes a live link in someone else's browser. None of these fields are
+    meant to be formatted — they are things an angler typed about a fish.
+
+    The backslash must be escaped first, or it would double-escape the
+    backslashes this function itself adds.
+    """
+    if value is None:
+        return ""
+    out = str(value)
+    for ch in _MD_SPECIAL:
+        out = out.replace(ch, "\\" + ch)
+    return out
+
+
+def _chart_ready(df, *value_cols) -> bool:
+    """Whether a frame can actually be plotted (CR-9).
+
+    Vega logs "infinite extent for field" warnings and draws an empty axis when
+    handed an empty frame or a column that is all-NaN, which is how the browser
+    console filled with them during normal demo use. Callers show a plain-text
+    explanation instead.
+    """
+    if df is None or len(df) == 0:
+        return False
+    for col in value_cols:
+        if col not in df.columns:
+            return False
+        series = pd.to_numeric(df[col], errors="coerce")
+        if not series.notna().any():
+            return False
+    return True
+
+
+def _chart_data_table(df, caption: str = "Show the numbers behind this chart"):
+    """A text alternative for a chart (CR-9).
+
+    A chart is an image to a screen reader and invisible to someone who cannot
+    distinguish its colours. The same numbers in a table are readable by both,
+    and by anyone who just wants the exact value. Collapsed so it does not
+    crowd the visual layout.
+    """
+    with st.expander(caption):
+        st.dataframe(df, width="stretch", hide_index=True)
+
+
 def _inject_css():
     """App-wide polish: card-style metrics, tidy spacing, header accents."""
     st.markdown(
@@ -615,7 +671,7 @@ def page_dashboard():
         years = analytics.available_years()
         year = years[0] if years else None
         monthly = _cached_by_month(user, year, ver)
-        if not monthly.empty:
+        if _chart_ready(monthly, "total_fish"):
             st.caption(f"Season {year}")
             st.altair_chart(
                 alt.Chart(monthly).mark_bar(color=CB_PALETTE[0]).encode(
@@ -624,6 +680,10 @@ def page_dashboard():
                     tooltip=["month", "total_fish", "sessions"],
                 ).properties(height=260, width="container")
             )
+            _chart_data_table(monthly[["month", "sessions", "total_fish"]],
+                              "Fish per month — the numbers")
+        else:
+            st.caption("No monthly totals to chart yet.")
 
     with right:
         st.subheader("Recent trips")
@@ -634,7 +694,7 @@ def page_dashboard():
             big = _fmt_len(getattr(r, "biggest_length", None))
             big_txt = f" · biggest {big}" if big else ""
             with st.container(border=True):
-                st.markdown(f"**{r.date}** · {r.location_name}")
+                st.markdown(f"**{r.date}** · {_plain(r.location_name)}")
                 st.markdown(
                     f"<span class='trip-meta'>{int(r.total_fish)} fish{big_txt}<br>"
                     f"{_html.escape(r.species_list) if r.species_list else 'skunked'}</span>",
@@ -1163,14 +1223,23 @@ def _filter_controls(key_prefix: str):
     locations = [""] + _cached_locations(db.get_current_user(), _cache_ver())
     species_opts = [""] + SPECIES
     c1, c2, c3, c4 = st.columns(4)
+    # Distinct, self-describing labels (CR-9). "From" and "To" alone give a
+    # screen reader two near-identical date fields with no clue what they
+    # bound; read aloud out of visual context they are indistinguishable.
     with c1:
-        date_from = st.date_input("From", value=DEFAULT_FROM_DATE, key=f"{key_prefix}_from")
+        date_from = st.date_input(
+            "Show trips from", value=DEFAULT_FROM_DATE, key=f"{key_prefix}_from",
+            help="Earliest trip date to include.",
+        )
     with c2:
-        date_to = st.date_input("To", value=date.today(), key=f"{key_prefix}_to")
+        date_to = st.date_input(
+            "Show trips until", value=date.today(), key=f"{key_prefix}_to",
+            help="Latest trip date to include.",
+        )
     with c3:
-        location = st.selectbox("Location", locations, key=f"{key_prefix}_loc")
+        location = st.selectbox("Filter by location", locations, key=f"{key_prefix}_loc")
     with c4:
-        species = st.selectbox("Species", species_opts, key=f"{key_prefix}_sp")
+        species = st.selectbox("Filter by species", species_opts, key=f"{key_prefix}_sp")
     return (
         date_from.isoformat() if date_from else None,
         date_to.isoformat() if date_to else None,
@@ -1247,7 +1316,7 @@ def page_browse():
     st.divider()
     detail = search.get_session(st.session_state["browse_sel"])
     if detail:
-        st.subheader(f"Trip detail — {detail['date']} · {detail['location_name']}")
+        st.subheader(f"Trip detail — {detail['date']} · {_plain(detail['location_name'])}")
         _render_session_detail(detail, st.session_state["browse_sel"])
 
 
@@ -1290,21 +1359,21 @@ def _render_session_detail(detail: dict, sid: int):
     left, right = st.columns(2)
     with left:
         st.write(f"**Date:** {detail['date']}")
-        st.write(f"**Location:** {detail['location_name']}")
+        st.write(f"**Location:** {_plain(detail['location_name'])}")
         st.write(f"**Time:** {detail.get('start_time')} – {detail.get('end_time')} "
                  f"({detail.get('hours_fished')} h)")
         st.write(f"**Spots:** {len(detail_spots)}"
                  + (f" · {sum(bool(s.get('caught')) for s in detail_spots)} with fish"
                     if detail_spots else ""))
     with right:
-        st.write(f"**Weather:** {detail.get('weather')}")
+        st.write(f"**Weather:** {_plain(detail.get('weather'))}")
         st.write(f"**Air / Water:** {detail.get('air_temp')}° / {detail.get('water_temp')}°")
-        st.write(f"**Bait/Lure:** {detail.get('bait_lure')}")
+        st.write(f"**Bait/Lure:** {_plain(detail.get('bait_lure'))}")
         st.write(f"**Style:** {detail.get('fishing_style') or 'n/a'}")
         st.write(f"**Anglers:** {detail.get('num_anglers') or 1}")
         st.write(f"**Total fish:** {detail['total_fish']}")
         if detail.get("moon_phase"):
-            st.write(f"**Moon:** {detail['moon_phase']}")
+            st.write(f"**Moon:** {_plain(detail['moon_phase'])}")
     if detail["fish"]:
         fish_df = pd.DataFrame(detail["fish"])
         fish_df = fish_df.rename(columns={
@@ -1324,7 +1393,7 @@ def _render_session_detail(detail: dict, sid: int):
             )
         st.table(fish_df)
     if detail.get("notes"):
-        st.info(detail["notes"])
+        st.info(_plain(detail["notes"]))
 
     # DWR Striped Bass Angler Journal — pre-filled Google Form for this outing.
     report = dwr_report.summarize(detail)
@@ -1590,6 +1659,124 @@ def _render_whats_working():
         )
 
 
+def page_privacy():
+    """Privacy & Data (CR-8).
+
+    Written from what the code actually does, not from a template. Two details
+    that a generic policy would miss and that matter here: exact coordinates
+    are stored and exported, and there is no server-side backup — the ZIP the
+    angler downloads is the only copy that can bring their trips back.
+
+    Set a `privacy_contact` secret to publish a contact address; the owner's
+    dev_user_email is deliberately NOT shown, since this page is public.
+    """
+    st.header("🔒 Privacy & Your Data")
+    st.caption("What this app stores, who can see it, and what happens if you leave.")
+
+    st.subheader("The short version")
+    st.markdown(
+        "- Your trips are **private to your account**. Other members cannot see them.\n"
+        "- The app stores the **exact coordinates** of your fishing spots.\n"
+        "- The person who runs this app **can see all data**, including yours.\n"
+        "- **There is no server-side backup.** If your data is deleted, only a "
+        "backup ZIP you downloaded yourself can bring it back."
+    )
+
+    st.subheader("Where your data lives")
+    st.markdown(
+        "- **Supabase** hosts the database holding every trip, fish, and map pin.\n"
+        "- **Streamlit Community Cloud** runs the app itself.\n"
+        "\n"
+        "Both are third-party services with their own privacy terms. Neither is "
+        "operated by the person running this fishing log."
+    )
+
+    st.subheader("What leaves your browser")
+    st.markdown(
+        "- **Map tiles** are fetched from **OpenStreetMap** whenever you open a "
+        "map. Their servers can see the map area you are looking at.\n"
+        "- **Signing in** goes through **Google**. The app receives your email "
+        "address; it never sees your Google password.\n"
+        "- **The \"use my location\" button** asks your device for its GPS "
+        "position. Your browser will prompt first, and you can decline — you "
+        "can always drop pins on the map by hand instead.\n"
+        "- **Filing a DWR report** opens a **Google Form** run by the Virginia "
+        "Department of Wildlife Resources, pre-filled with that trip's details. "
+        "Nothing is submitted until you press Submit on their form. The app "
+        "does not fill in your email — Google supplies it from the account you "
+        "are signed into. What DWR does with a submitted report is governed by "
+        "their policy, not this app's."
+    )
+
+    st.subheader("Fishing spots are stored exactly")
+    st.markdown(
+        "Every pin you drop is saved as a precise latitude and longitude, not a "
+        "rounded or approximate area. That is what makes the route map and the "
+        "catch heatmap work.\n\n"
+        "Those exact coordinates are included in **every export and backup file** "
+        "you download. If you share a backup ZIP or a CSV with someone, you are "
+        "sharing your fishing spots with them. There is no setting to blur or "
+        "round them."
+    )
+
+    st.subheader("Who can access your data")
+    st.markdown(
+        "- **You**, when signed in.\n"
+        "- **The app owner**, who holds the database credentials and can "
+        "therefore read, change, or delete any account's data. This is not a "
+        "special feature — it is what running the database means.\n"
+        "- **Supabase and Streamlit staff**, to the extent their own terms allow.\n"
+        "\n"
+        "Accounts are **approval-only**: signing in with Google is not enough, "
+        "the owner has to add your address to the approved list first. Everyone "
+        "else sees the read-only demo."
+    )
+
+    st.subheader("Keeping and deleting your data")
+    st.markdown(
+        "- Trips are kept **until you delete them**. Nothing expires or is "
+        "removed automatically.\n"
+        "- **Delete one trip** from Browse & Search — that removes its fish and "
+        "route pins too.\n"
+        "- **Delete everything** from the sidebar under *⚠️ Clear my data*. It "
+        "makes you download a backup first, on purpose.\n"
+        "- Deletion is **immediate and permanent**. There is no undo, no bin to "
+        "recover from, and no snapshot to roll back to.\n"
+        "- A DWR report you already submitted is **held by the state**, not by "
+        "this app. Deleting the trip here does not withdraw it."
+    )
+
+    st.subheader("Backups are your responsibility")
+    st.warning(
+        "**No copy of your trips is kept anywhere you can reach.** If the "
+        "database is lost, or you delete something by mistake, the only way "
+        "back is a backup ZIP you downloaded yourself.\n\n"
+        "Download one from **Export** every month or so and keep it somewhere "
+        "safe.",
+        icon="⚠️",
+    )
+
+    contact = _secret("privacy_contact", "")
+    if contact:
+        st.subheader("Questions")
+        st.markdown(
+            f"Ask the person who runs this app: **{contact}**. They can remove "
+            "your account and its data on request."
+        )
+    else:
+        st.subheader("Questions")
+        st.caption(
+            "Contact whoever set this app up for your club — they can remove "
+            "your account and its data on request."
+        )
+
+    st.divider()
+    st.caption(
+        "This page describes how the app behaves. It is not a legal document, "
+        "and it is not legal advice."
+    )
+
+
 def page_analytics():
     st.header("📊 Analytics")
     if analytics.overall_stats()["sessions"] == 0:
@@ -1625,23 +1812,30 @@ def page_analytics():
             st.dataframe(tbl, use_container_width=True, hide_index=True)
 
             st.subheader("Fish caught per month")
-            st.altair_chart(
-                alt.Chart(chart_df).mark_bar(color="#1a9850").encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("total_fish:Q", title="Fish caught"),
-                    tooltip=["month", "total_fish", "sessions", "success_rate"],
-                ).properties(height=320, width="container")
-            )
+            if _chart_ready(chart_df, "total_fish"):
+                st.altair_chart(
+                    alt.Chart(chart_df).mark_bar(color="#1a9850").encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("total_fish:Q", title="Fish caught"),
+                        tooltip=["month", "total_fish", "sessions", "success_rate"],
+                    ).properties(height=320, width="container")
+                )
+            else:
+                st.caption("Nothing to chart for this year — the table above has "
+                           "the full picture.")
 
             st.subheader("Success rate by month (%)")
-            st.altair_chart(
-                alt.Chart(chart_df).mark_line(point=True, color="#2c7fb8").encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("success_rate:Q", title="Success rate %",
-                            scale=alt.Scale(domain=[0, 100])),
-                    tooltip=["month", "success_rate", "sessions_with_fish", "sessions"],
-                ).properties(height=280, width="container")
-            )
+            if _chart_ready(chart_df, "success_rate"):
+                st.altair_chart(
+                    alt.Chart(chart_df).mark_line(point=True, color="#2c7fb8").encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("success_rate:Q", title="Success rate %",
+                                scale=alt.Scale(domain=[0, 100])),
+                        tooltip=["month", "success_rate", "sessions_with_fish", "sessions"],
+                    ).properties(height=280, width="container")
+                )
+            else:
+                st.caption("No success rates recorded for this year yet.")
 
     elif section == "Sizes":
         sizes = analytics.size_by_month(year)
@@ -1654,20 +1848,24 @@ def page_analytics():
                 id_vars="month", value_vars=["avg_length", "max_length"],
                 var_name="metric", value_name="inches",
             )
-            st.altair_chart(
-                alt.Chart(melted).mark_line(point=True).encode(
-                    x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
-                    y=alt.Y("inches:Q", title="Length (in)"),
-                    color=alt.Color("metric:N", title="",
-                                    scale=alt.Scale(range=CB_PALETTE[:2])),
-                    tooltip=["month", "metric", "inches"],
-                ).properties(height=300, width="container")
-            )
+            if _chart_ready(melted, "inches"):
+                st.altair_chart(
+                    alt.Chart(melted).mark_line(point=True).encode(
+                        x=alt.X("month:N", sort=analytics.MONTH_ORDER, title="Month"),
+                        y=alt.Y("inches:Q", title="Length (in)"),
+                        color=alt.Color("metric:N", title="",
+                                        scale=alt.Scale(range=CB_PALETTE[:2])),
+                        tooltip=["month", "metric", "inches"],
+                    ).properties(height=300, width="container")
+                )
+            else:
+                st.caption("No measured lengths this year — the table above lists "
+                           "what was recorded.")
 
             st.subheader("Length distribution (in)")
             fish = analytics.fish_sizes(year)
             fish = fish[fish["length"] > 0] if not fish.empty else fish
-            if fish.empty:
+            if not _chart_ready(fish, "length"):
                 st.caption("No measured lengths yet.")
             else:
                 st.altair_chart(
@@ -1677,6 +1875,16 @@ def page_analytics():
                         tooltip=[alt.Tooltip("count()", title="fish")],
                     ).properties(height=300, width="container")
                 )
+                # Text alternative: the histogram is otherwise unreadable to a
+                # screen reader and to anyone who cannot see the bar heights.
+                buckets = (
+                    fish.assign(band=(fish["length"] // 2 * 2).astype(int))
+                        .groupby("band").size().reset_index(name="fish")
+                )
+                buckets["Length band (in)"] = buckets["band"].map(
+                    lambda b: f"{b}–{b + 2}")
+                _chart_data_table(buckets[["Length band (in)", "fish"]],
+                                  "Length distribution — the numbers")
 
     elif section == "Personal Bests":
         best = analytics.personal_bests()
@@ -2086,7 +2294,7 @@ def main():
     page = st.sidebar.radio(
         "Navigate",
         ["Dashboard", "Log a Session", "Browse & Search", "Analytics",
-         "Calendar", "Map", "Export"],
+         "Calendar", "Map", "Export", "Privacy & Data"],
     )
 
     _hero_banner()
@@ -2133,6 +2341,7 @@ def main():
         "Calendar": page_calendar,
         "Map": page_map,
         "Export": page_backup,
+        "Privacy & Data": page_privacy,
     }[page]()
 
     guide = _user_guide_bytes()
