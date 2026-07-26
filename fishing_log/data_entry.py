@@ -6,15 +6,11 @@ one per fish. Zero fish means a skunked trip.
 """
 from __future__ import annotations
 
-import logging
-import uuid
 from contextlib import contextmanager
 from datetime import date as _date, datetime
 from typing import List, Optional
 
-from . import database as db
-
-_log = logging.getLogger("fishing_log.writes")
+from . import database as db, observability as obs
 
 
 def moon_phase_name(d) -> str:
@@ -69,19 +65,19 @@ def _atomic(operation: str, **context):
     Anything else is logged in full with a short correlation id and re-raised
     as SaveError, so the user gets a sentence instead of a stack trace.
     """
-    reference = uuid.uuid4().hex[:8].upper()
+    reference = obs.new_correlation_id()
     try:
         with db.write_transaction() as conn:
             yield conn
     except ValidationError:
         raise
-    except Exception:
-        # exception() captures the traceback; the reference is the only part
-        # the user sees, which is what makes the two joinable.
-        _log.exception(
-            "[writes] %s failed and was rolled back (ref=%s, context=%s)",
-            operation, reference, context,
-        )
+    except Exception as exc:
+        # The traceback goes to the log body; the summary line carries only the
+        # correlation id and scalar context, never the exception message, which
+        # can quote a connection string. The reference is the one part the user
+        # sees, which is what makes the two joinable.
+        obs.failure(f"write.{operation}", correlation_id=reference, exc=exc,
+                    **context)
         raise SaveError(reference) from None
 
 

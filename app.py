@@ -21,7 +21,7 @@ from streamlit_folium import st_folium
 
 from fishing_log import (
     analytics, auth_policy, backup_io, data_entry, database as db, dwr_report,
-    map_view, search,
+    map_view, observability as obs, search,
 )
 
 # Optional GPS button component; app still works if it isn't installed.
@@ -78,6 +78,50 @@ def _plain(value) -> str:
     for ch in _MD_SPECIAL:
         out = out.replace(ch, "\\" + ch)
     return out
+
+
+def _owner_health_panel():
+    """Sidebar health readout, owner only (CR-10).
+
+    Community Cloud has no metrics backend to ship to, so "monitoring" here is
+    a panel the owner can read and a log line the owner can grep. The point is
+    that repeated failures surface here rather than arriving as a phone call
+    from a club member.
+    """
+    failures = obs.recent_failures()
+
+    if obs.should_alert_owner():
+        st.sidebar.error(
+            f"⚠️ {len(failures)} failures in the last "
+            f"{obs.ALERT_WINDOW_SECONDS // 60} min — check the logs.",
+            icon="🚨",
+        )
+
+    label = f"📈 Health ({len(failures)} recent failures)" if failures else "📈 Health"
+    with st.sidebar.expander(label):
+        pool = obs.pool_stats(db.get_engine())
+        if pool:
+            st.caption(
+                f"DB pool — {pool['checked_out']} in use, "
+                f"capacity {pool['capacity']} "
+                f"(base {pool['size']}, {pool['overflow']} overflow open)"
+            )
+            if pool.get("exhausted"):
+                st.error("Connection pool exhausted.", icon="🔌")
+        else:
+            st.caption("DB pool — counters unavailable.")
+
+        if not failures:
+            st.caption("No failures recorded in this window.")
+        else:
+            for seconds_ago, event in reversed(failures[-8:]):
+                st.caption(f"• {event} — {seconds_ago}s ago")
+            if st.button("Clear", key="clear_failures"):
+                obs.reset_failures()
+                st.rerun()
+
+        st.caption(f"Build {APP_BUILD}. Full tracebacks are in the server log; "
+                   "search for the reference shown in the error.")
 
 
 def _chart_ready(df, *value_cols) -> bool:
@@ -501,6 +545,7 @@ def _bootstrap():
     (surfaced to the owner in the sidebar), else None — never silently swallowed.
     """
     import os
+    obs.configure_logging()
     if "database_url" in st.secrets:
         os.environ["DATABASE_URL"] = st.secrets["database_url"]
     try:
@@ -2245,6 +2290,7 @@ def main():
         demo_admin = st.sidebar.toggle("🛠 Edit demo data", key="demo_admin_toggle")
         if demo_admin:
             db.set_current_user(DEMO_EMAIL)
+        _owner_health_panel()
         with st.sidebar.expander("🩺 DWR form health check"):
             st.caption("Fetches the DWR Google Form and verifies every hardcoded "
                        "entry ID still exists — run after any DWR form change.")

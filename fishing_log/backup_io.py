@@ -23,7 +23,7 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import text
 
-from . import database as db
+from . import database as db, observability as obs
 
 BACKUP_VERSION = 2          # v2 adds trip_uuid for idempotent restore
 SUPPORTED_VERSIONS = (1, 2)  # v1 files restore fine; they just have no uuids
@@ -240,7 +240,12 @@ def build_zip_bytes() -> bytes:
         zf.writestr("fish.csv", to_safe_csv(fish))
         zf.writestr("spots.csv", to_safe_csv(spots))
         zf.writestr(JSON_NAME, json.dumps(data, indent=1, default=str))
-    return buf.getvalue()
+    payload = buf.getvalue()
+
+    # Audit the event, not its contents: how much moved, never what it said.
+    obs.audit("backup.exported", trips=len(sessions), fish=len(fish),
+              spots=len(spots), bytes=len(payload), version=BACKUP_VERSION)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -500,5 +505,11 @@ def restore_backup(data: dict, skip_duplicates: bool = True) -> dict:
             existing_keys.add(key)
         except Exception as exc:  # keep going; report at the end
             errors.append(f"Trip {i} ({s.get('date')}): {exc}")
+            obs.failure("restore.trip_failed",
+                        correlation_id=obs.new_correlation_id(), exc=exc,
+                        trip_index=i)
 
+    obs.audit("backup.restored", restored=restored, skipped=skipped,
+              failed=len(errors), offered=len(data.get("sessions", [])),
+              version=data.get("version"), skip_duplicates=skip_duplicates)
     return {"restored": restored, "skipped": skipped, "errors": errors}
