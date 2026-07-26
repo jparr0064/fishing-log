@@ -47,6 +47,10 @@ SPECIES = ["Striper", "Largemouth Bass", "Smallmouth Bass", "Catfish", "Muskie"]
 # Default "From" date for Map and Browse filters — start of year so all trips show.
 DEFAULT_FROM_DATE = date(2026, 1, 1)
 
+# Trip cards drawn per Browse page. Two per row, so this is 10 rows — enough to
+# scan a season without building 500 card blocks on every rerun (CR-5).
+BROWSE_PAGE_SIZE = 20
+
 # Okabe-Ito color-blind-safe palette (distinguishable across CVD types).
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
 
@@ -1210,16 +1214,35 @@ def page_browse():
         st.info("No sessions match these filters.")
         return
 
-    sessions = list(df.itertuples())
-    ids = [int(r.id) for r in sessions]
+    all_rows = list(df.itertuples())
+    ids = [int(r.id) for r in all_rows]
     if st.session_state.get("browse_sel") not in ids:
         st.session_state["browse_sel"] = ids[0]
+
+    # Paginate: a 500-trip account rendered every card on every run, and each
+    # card is a column block with its own markdown (CR-5). The filters above
+    # remain the way to search across everything — this only bounds how much
+    # is drawn at once.
+    total_pages = max(1, -(-len(all_rows) // BROWSE_PAGE_SIZE))  # ceil
+    page = 1
+    if total_pages > 1:
+        page = st.number_input(
+            f"Page (showing {BROWSE_PAGE_SIZE} of {len(all_rows)} trips)",
+            min_value=1, max_value=total_pages, value=1, step=1,
+            key="browse_page",
+        )
+    start = (int(page) - 1) * BROWSE_PAGE_SIZE
+    sessions = all_rows[start:start + BROWSE_PAGE_SIZE]
 
     for i in range(0, len(sessions), 2):  # 2 cards per row
         cols = st.columns(2)
         for j, r in enumerate(sessions[i:i + 2]):
             with cols[j]:
                 _trip_card(r)
+
+    if total_pages > 1:
+        st.caption(f"Page {int(page)} of {total_pages} · {len(all_rows)} trips match "
+                   "these filters. Narrow the filters above to find a specific trip.")
 
     st.divider()
     detail = search.get_session(st.session_state["browse_sel"])
@@ -1576,14 +1599,22 @@ def page_analytics():
     years = analytics.available_years()
     year = st.selectbox("Year", years, index=0) if years else None
 
-    tab_month, tab_sizes, tab_best, tab_work = st.tabs(
-        ["Monthly", "Sizes", "Personal Bests", "What's working"]
+    # A selector, not st.tabs. Streamlit computes every tab body on every run
+    # even though three of the four are hidden, so the old layout built all
+    # four sections — tables, charts and their queries — to show one (CR-5).
+    # A radio also announces itself properly to a screen reader, which the tab
+    # strip did not.
+    section = st.radio(
+        "Analytics section",
+        ["Monthly", "Sizes", "Personal Bests", "What's working"],
+        horizontal=True,
+        key="analytics_section",
     )
 
-    with tab_work:
+    if section == "What's working":
         _render_whats_working()
 
-    with tab_month:
+    elif section == "Monthly":
         tbl = analytics.by_month(year)
         if tbl.empty:
             st.info("No data for this year.")
@@ -1612,7 +1643,7 @@ def page_analytics():
                 ).properties(height=280, width="container")
             )
 
-    with tab_sizes:
+    elif section == "Sizes":
         sizes = analytics.size_by_month(year)
         if sizes.empty:
             st.info("No size data yet — add length/weight when logging fish.")
@@ -1647,7 +1678,7 @@ def page_analytics():
                     ).properties(height=300, width="container")
                 )
 
-    with tab_best:
+    elif section == "Personal Bests":
         best = analytics.personal_bests()
         if best.empty:
             st.info("No fish recorded yet.")

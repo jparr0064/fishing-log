@@ -34,6 +34,39 @@ def get_current_user() -> str:
     return st.session_state.get("user_email", "")
 
 
+# Cache generation for callers with no Streamlit session (tests, scripts).
+_fallback_cache_ver = 0
+
+
+def cache_version() -> int:
+    """This user's cache generation.
+
+    Part of every cache key, so invalidating one angler's cached reads leaves
+    everyone else's alone. Lives in session_state for the same reason the user
+    does: widget callbacks run on a different thread than the main script.
+    """
+    try:
+        return int(st.session_state.get("_cache_ver", 0))
+    except Exception:
+        return _fallback_cache_ver
+
+
+def bump_cache_version() -> None:
+    """Invalidate this user's cached reads. Called on every successful commit.
+
+    Deliberately here rather than only in app._refresh(): a cache that depends
+    on the UI layer remembering to invalidate it will eventually serve stale
+    analytics from a write path someone forgot to annotate. Tying it to the
+    commit makes that impossible.
+    """
+    global _fallback_cache_ver
+    _fallback_cache_ver += 1
+    try:
+        st.session_state["_cache_ver"] = int(st.session_state.get("_cache_ver", 0)) + 1
+    except Exception:
+        pass  # no session to invalidate; the fallback counter covers it
+
+
 # ---------------------------------------------------------------------------
 # Engine (created once per server process)
 # ---------------------------------------------------------------------------
@@ -119,10 +152,16 @@ def write_transaction():
 
     Commits on success, rolls back on any exception — so an aggregate write
     that fails part-way leaves nothing behind (see CR-4).
+
+    Bumps the cache generation after a successful commit, so cached reads can
+    never outlive the data they summarise.
     """
     with get_engine().begin() as conn:
         _apply_user_scope(conn)
         yield conn
+    # Only reached when the transaction committed — an exception propagates
+    # out of the `with` above and skips this, leaving the cache valid.
+    bump_cache_version()
 
 
 # ---------------------------------------------------------------------------

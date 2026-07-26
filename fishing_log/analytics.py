@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
+import streamlit as st
 
 from . import database as db
 
@@ -26,8 +27,40 @@ SEASON_BY_MONTH = {
 SEASON_ORDER = ["Spring", "Summer", "Fall", "Winter"]
 
 
+# ---------------------------------------------------------------------------
+# Shared base frames (CR-5)
+#
+# Twelve of the functions below derive from the session frame and four from the
+# fish frame. Each used to run its own query, so rendering the Analytics page
+# meant a dozen round trips for data that is identical every time. Both frames
+# are now fetched once per cache generation and every summary is derived from
+# them in pandas.
+#
+# The cache key is (user_email, cache_version): the email keeps one angler's
+# frame from ever being handed to another, and the version — bumped by
+# app._refresh() after a write — invalidates only that angler's entries.
+#
+# st.cache_data hands back a copy per call, so a caller that mutates its frame
+# cannot corrupt the cached original.
+# ---------------------------------------------------------------------------
+
+def _cache_key() -> tuple:
+    return db.get_current_user(), db.cache_version()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _session_frame_cached(user_email: str, cache_ver: int) -> pd.DataFrame:
+    """One row per session. Arguments are cache-key parts only — the query
+    scopes on db.get_current_user() like every other read."""
+    return _load_session_frame()
+
+
 def _session_frame() -> pd.DataFrame:
     """One row per session with total_fish, caught flag, month/season, etc."""
+    return _session_frame_cached(*_cache_key())
+
+
+def _load_session_frame() -> pd.DataFrame:
     from sqlalchemy import text
     query = text("""
         SELECT
@@ -293,8 +326,18 @@ def by_species() -> pd.DataFrame:
     return df.sort_values("total_caught", ascending=False).reset_index(drop=True)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _fish_frame_cached(user_email: str, cache_ver: int) -> pd.DataFrame:
+    """Cache-key wrapper; see _session_frame_cached."""
+    return _load_fish_with_dates()
+
+
 def _fish_with_dates() -> pd.DataFrame:
     """Every fish joined to its session date (for size analytics)."""
+    return _fish_frame_cached(*_cache_key())
+
+
+def _load_fish_with_dates() -> pd.DataFrame:
     from sqlalchemy import text
     query = text("""
         SELECT f.species, f.length, f.weight, s.date

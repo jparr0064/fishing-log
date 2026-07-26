@@ -117,11 +117,19 @@ def _s(v):
     return v
 
 
-def export_backup() -> dict:
-    """The complete restorable record for the current user."""
-    sessions = _sessions_df()
-    fish = _fish_df()
-    spots = _spots_df()
+def export_backup(
+    sessions: Optional[pd.DataFrame] = None,
+    fish: Optional[pd.DataFrame] = None,
+    spots: Optional[pd.DataFrame] = None,
+) -> dict:
+    """The complete restorable record for the current user.
+
+    The three frames can be passed in when the caller already has them, so
+    building the ZIP does not query every table twice (CR-5).
+    """
+    sessions = _sessions_df() if sessions is None else sessions
+    fish = _fish_df() if fish is None else fish
+    spots = _spots_df() if spots is None else spots
 
     by_sid_fish: dict = {}
     for r in fish.itertuples():
@@ -217,13 +225,20 @@ def to_safe_csv(df: pd.DataFrame) -> str:
 
 
 def build_zip_bytes() -> bytes:
-    """One ZIP with the three CSVs plus the restorable backup.json."""
-    data = export_backup()
+    """One ZIP with the three CSVs plus the restorable backup.json.
+
+    Each table is read exactly once and reused for both the CSV and the JSON.
+    This used to query all three twice — once for export_backup() and again
+    per CSV — six round trips for three tables' worth of data (CR-5).
+    """
+    sessions, fish, spots = _sessions_df(), _fish_df(), _spots_df()
+    data = export_backup(sessions, fish, spots)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("sessions.csv", to_safe_csv(_sessions_df()))
-        zf.writestr("fish.csv", to_safe_csv(_fish_df()))
-        zf.writestr("spots.csv", to_safe_csv(_spots_df()))
+        zf.writestr("sessions.csv", to_safe_csv(sessions))
+        zf.writestr("fish.csv", to_safe_csv(fish))
+        zf.writestr("spots.csv", to_safe_csv(spots))
         zf.writestr(JSON_NAME, json.dumps(data, indent=1, default=str))
     return buf.getvalue()
 
