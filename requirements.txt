@@ -42,6 +42,15 @@ altair>=5.0
 # Google after deploying. To roll back: pin Authlib==1.6.5 and redeploy.
 Authlib==1.6.12
 
+# Required BY Authlib's starlette integration, which is what streamlit imports
+# to build the Google OAuth client. Authlib declares httpx as an optional extra
+# and 1.6.5 imported it lazily, so it was never needed before — 1.6.12's
+# starlette_client/__init__ pulls httpx_client eagerly, and without this the
+# app raises ModuleNotFoundError the moment anyone clicks "Sign in with
+# Google". Nothing local catches that: development uses the email form, so the
+# OIDC path is never imported here. It took a production outage to find.
+httpx>=0.27
+
 # pyarrow: streamlit allows <25. Held at 19.0.1 by the old cap, which carries
 # PYSEC-2026-113 (use-after-free reading malicious Arrow IPC files). This app
 # never reads user-supplied Arrow files, so exposure is remote — but the fix is
