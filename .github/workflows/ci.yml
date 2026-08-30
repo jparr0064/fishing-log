@@ -6,7 +6,13 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # cloud-version is the deploy branch — pushing to it IS deploying, so it is
+    # the branch that most needs the suite to run. It was missing here until
+    # 2026-08-30, which meant CI had never actually run: GitHub only reads a
+    # workflow file from the branch being pushed, so a push to cloud-version
+    # found this file saying "main only" and skipped, while a push to main
+    # found no file at all.
+    branches: [main, cloud-version]
   pull_request:
   # Lets the audit catch CVEs disclosed after the last commit.
   schedule:
