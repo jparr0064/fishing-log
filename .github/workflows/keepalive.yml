@@ -22,18 +22,25 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the app health endpoint
+      - name: Ping the app
         run: |
-          URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/_stcore/health"
+          # Hit the app root, which is what a real visitor loads.
+          URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/"
 
-          # -L follows redirects: Streamlit answers this endpoint with a 303 to
-          # its own wake-up route, and without -L curl reports that 303 and
-          # stops. Any 2xx after following means the app answered.
-          #
-          # Three attempts before giving up, so one transient blip during a
-          # cold start does not raise a false alarm.
+          # Streamlit Cloud answers a bare request with a 303 and sets a
+          # session cookie. A plain `curl URL` therefore reports 303 and looks
+          # like a failure. Three things make curl behave like a browser:
+          #   -L        follow the redirect
+          #   -c/-b     keep a cookie jar across the hops
+          #   -A        send a normal browser user-agent
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          JAR="$(mktemp)"
+
           for attempt in 1 2 3; do
-            code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 "$URL" || echo "000")
+            code=$(curl -sSL --compressed \
+                     -A "$UA" -c "$JAR" -b "$JAR" \
+                     -o /dev/null -w '%{http_code}' \
+                     --max-time 90 "$URL" || echo "000")
             echo "Attempt $attempt: HTTP $code"
             case "$code" in
               2*)
