@@ -1,0 +1,43 @@
+name: Keep app awake
+
+# Streamlit Community Cloud hibernates an app after ~12 hours with no traffic,
+# and the next visitor then waits through a cold start. This pings the app on a
+# 6-hour cycle so it never crosses that window. Runs on GitHub's runners, so it
+# does not depend on any particular machine being switched on.
+#
+# Scheduled workflows only fire from the DEFAULT branch (main) — keeping a copy
+# on another branch does nothing.
+
+on:
+  schedule:
+    # Every 6 hours. GitHub evaluates cron in UTC, which does not matter here:
+    # the interval is what counts, not the wall-clock time it lands on.
+    # GitHub may delay scheduled runs when its queue is busy; a 6-hour cycle
+    # leaves plenty of margin under the 12-hour hibernation window.
+    - cron: "0 */6 * * *"
+  # Lets you trigger it by hand from the Actions tab to test it.
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the app health endpoint
+        run: |
+          URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/_stcore/health"
+
+          # Three attempts before giving up. A sleeping app still answers 200 —
+          # it serves the wake-up page — so a non-200 means something is
+          # actually wrong, not merely hibernating.
+          for attempt in 1 2 3; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 "$URL" || echo "000")
+            echo "Attempt $attempt: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "App responded OK."
+              exit 0
+            fi
+            sleep 20
+          done
+
+          echo "::error::App did not return HTTP 200 after 3 attempts (last: $code)."
+          exit 1
