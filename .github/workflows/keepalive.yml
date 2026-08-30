@@ -1,0 +1,57 @@
+name: Keep app awake
+
+# Streamlit Community Cloud hibernates an app after ~12 hours with no traffic,
+# and the next visitor then waits through a cold start. This pings the app on a
+# 6-hour cycle so it never crosses that window. Runs on GitHub's runners, so it
+# does not depend on any particular machine being switched on.
+#
+# Scheduled workflows only fire from the DEFAULT branch. This file lives on
+# cloud-version because cloud-version is the default branch as of 2026-08-30
+# (it is also the deploy branch, and the branch the real code is on). A copy
+# remains on main and is inert — main is a stale snapshot.
+
+on:
+  schedule:
+    # Every 6 hours. GitHub evaluates cron in UTC, which does not matter here:
+    # the interval is what counts, not the wall-clock time it lands on.
+    # GitHub may delay scheduled runs when its queue is busy; a 6-hour cycle
+    # leaves plenty of margin under the 12-hour hibernation window.
+    - cron: "0 */6 * * *"
+  # Lets you trigger it by hand from the Actions tab to test it.
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping the app
+        run: |
+          # Hit the app root, which is what a real visitor loads.
+          URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/"
+
+          # Streamlit Cloud answers a bare request with a 303 and sets a
+          # session cookie. A plain `curl URL` therefore reports 303 and looks
+          # like a failure. Three things make curl behave like a browser:
+          #   -L        follow the redirect
+          #   -c/-b     keep a cookie jar across the hops
+          #   -A        send a normal browser user-agent
+          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          JAR="$(mktemp)"
+
+          for attempt in 1 2 3; do
+            code=$(curl -sSL --compressed \
+                     -A "$UA" -c "$JAR" -b "$JAR" \
+                     -o /dev/null -w '%{http_code}' \
+                     --max-time 90 "$URL" || echo "000")
+            echo "Attempt $attempt: HTTP $code"
+            case "$code" in
+              2*)
+                echo "App responded OK."
+                exit 0
+                ;;
+            esac
+            sleep 20
+          done
+
+          echo "::error::App did not respond with 2xx after 3 attempts (last: $code)."
+          exit 1
