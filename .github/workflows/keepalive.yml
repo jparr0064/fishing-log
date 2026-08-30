@@ -26,18 +26,23 @@ jobs:
         run: |
           URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/_stcore/health"
 
-          # Three attempts before giving up. A sleeping app still answers 200 —
-          # it serves the wake-up page — so a non-200 means something is
-          # actually wrong, not merely hibernating.
+          # -L follows redirects: Streamlit answers this endpoint with a 303 to
+          # its own wake-up route, and without -L curl reports that 303 and
+          # stops. Any 2xx after following means the app answered.
+          #
+          # Three attempts before giving up, so one transient blip during a
+          # cold start does not raise a false alarm.
           for attempt in 1 2 3; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 "$URL" || echo "000")
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 60 "$URL" || echo "000")
             echo "Attempt $attempt: HTTP $code"
-            if [ "$code" = "200" ]; then
-              echo "App responded OK."
-              exit 0
-            fi
+            case "$code" in
+              2*)
+                echo "App responded OK."
+                exit 0
+                ;;
+            esac
             sleep 20
           done
 
-          echo "::error::App did not return HTTP 200 after 3 attempts (last: $code)."
+          echo "::error::App did not respond with 2xx after 3 attempts (last: $code)."
           exit 1
