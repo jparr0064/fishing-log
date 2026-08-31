@@ -351,6 +351,102 @@ def _load_fish_with_dates() -> pd.DataFrame:
     return df
 
 
+def by_method(dimension: str = "bait_lure") -> pd.DataFrame:
+    """Fish attributed to the method that actually caught them.
+
+    ``dimension`` is "bait_lure" or "fishing_style".
+
+    This is the per-FISH view, and it exists because the trip-level one is
+    wrong on exactly the days that matter. by_bait() credits every fish on an
+    outing to the single method recorded for the trip, so a day spent running
+    live shad on downlines while ripping spoons gives all the credit to
+    whichever was typed in the box.
+
+    Columns:
+      total_fish   — every fish, attributed by its own method, falling back to
+                     the trip's when the fish has none (which is every fish
+                     logged before migration 005, so history stays intact).
+      trips        — how many outings this method appears on.
+      fish_per_hour, rate_trips — computed ONLY from single-method outings.
+
+    That last restriction is the honest part. On a five-hour trip running two
+    techniques at once there is no way to know how the hours divided, so a
+    per-method rate would be invented. Rather than split the time arbitrarily,
+    the rate is built from trips where one method was the only method — where
+    the number means something — and rate_trips says how many trips that was,
+    so a thin figure is visible as thin. total_fish still counts everything.
+    """
+    if dimension not in ("bait_lure", "fishing_style"):
+        raise ValueError("dimension must be 'bait_lure' or 'fishing_style'")
+
+    df = _fish_with_method()
+    if df.empty:
+        return pd.DataFrame()
+
+    col = f"eff_{dimension}"
+    df = df[df[col].astype(str).str.strip() != ""]
+    if df.empty:
+        return pd.DataFrame()
+
+    # A trip is single-method for this dimension when every fish on it shares
+    # one method AND the trip recorded hours.
+    per_trip = df.groupby("session_id")[col].nunique()
+    single = set(per_trip[per_trip == 1].index)
+    timed = df[df["session_id"].isin(single) & df["hours_fished"].notna()
+               & (df["hours_fished"] > 0)]
+
+    totals = df.groupby(col).agg(
+        total_fish=("session_id", "size"),
+        trips=("session_id", "nunique"),
+    ).reset_index()
+
+    if timed.empty:
+        totals["fish_per_hour"] = 0.0
+        totals["rate_trips"] = 0
+    else:
+        # One row per (trip, method) so a trip's hours are counted once.
+        hours = timed.groupby([col, "session_id"])["hours_fished"].first()
+        fish = timed.groupby([col, "session_id"]).size()
+        rate = pd.DataFrame({"fish": fish, "hours": hours}).groupby(level=0).agg(
+            fish=("fish", "sum"), hours=("hours", "sum"), rate_trips=("fish", "size"))
+        rate["fish_per_hour"] = (rate["fish"] / rate["hours"]).round(2)
+        totals = totals.merge(
+            rate[["fish_per_hour", "rate_trips"]], left_on=col, right_index=True,
+            how="left")
+        totals["fish_per_hour"] = totals["fish_per_hour"].fillna(0.0)
+        totals["rate_trips"] = totals["rate_trips"].fillna(0).astype(int)
+
+    totals = totals.rename(columns={col: dimension})
+    return totals.sort_values("total_fish", ascending=False).reset_index(drop=True)
+
+
+def _fish_with_method() -> pd.DataFrame:
+    """Every fish with its EFFECTIVE method and its trip's hours.
+
+    Effective method = the fish's own, or the trip's when the fish has none.
+    That fallback is what lets migration 005 ship without a backfill: a fish
+    logged before it simply means "caught the way the trip was".
+    """
+    from sqlalchemy import text
+    with db.read_connection() as conn:
+        has_method = db.has_fish_method_columns(conn)
+        if has_method:
+            select = ("COALESCE(NULLIF(f.bait_lure, ''), s.bait_lure) AS eff_bait_lure, "
+                      "COALESCE(NULLIF(f.fishing_style, ''), s.fishing_style) AS eff_fishing_style")
+        else:
+            select = "s.bait_lure AS eff_bait_lure, s.fishing_style AS eff_fishing_style"
+        query = text(f"""
+            SELECT s.id AS session_id, s.hours_fished, {select}
+            FROM fish f JOIN sessions s ON s.id = f.session_id
+            WHERE s.user_email = :email
+        """)
+        df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
+    for c in ("eff_bait_lure", "eff_fishing_style"):
+        if c in df.columns:
+            df[c] = df[c].fillna("")
+    return df
+
+
 def personal_bests() -> pd.DataFrame:
     """Per-species longest and heaviest fish, with the date each was caught."""
     df = _fish_with_dates()

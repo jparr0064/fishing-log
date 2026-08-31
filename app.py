@@ -883,6 +883,9 @@ def _blank_fish_df(rows: int = 1) -> pd.DataFrame:
     return pd.DataFrame({
         "species": [None] * rows, "length": [0.0] * rows,
         "depth": [None] * rows, "weight": [0.0] * rows, "kept": [False] * rows,
+        # Per-fish method. Blank means "caught the way the trip was", which is
+        # what a single-technique day leaves them as — no extra clicks.
+        "bait_lure": [None] * rows, "fishing_style": [None] * rows,
     })
 
 
@@ -900,7 +903,16 @@ def _reset_fish_editor(key: str):
     st.session_state.pop(_bulk_key(key), None)
 
 
-def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
+# Shown in the per-fish Bait/Style dropdowns to clear a row back to the trip's
+# method. A real option rather than an empty string: Streamlit renders "None"
+# for a blank cell, which reads like missing data instead of a deliberate
+# "same as the trip".
+SAME_AS_TRIP = "— same as trip —"
+
+
+def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
+                 trip_bait: str | None = None, trip_style: str | None = None,
+                 extra_baits: list | None = None, extra_styles: list | None = None):
     """A data editor with one row per fish: species, length, depth, weight, kept.
 
     Must be rendered OUTSIDE any st.form — inside a form the browser holds all
@@ -927,6 +939,15 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
         df = df.assign(kept=False)
     if "depth" not in df.columns:
         df = df.assign(depth=None)
+    for _method_col, _trip_value in (("bait_lure", trip_bait),
+                                     ("fishing_style", trip_style)):
+        if _method_col not in df.columns:
+            df = df.assign(**{_method_col: None})
+        # Show the trip's method on every row rather than a blank. Blank was
+        # recorded correctly (it means "same as the trip") but read as missing
+        # data, so the angler could not see what a fish was being credited to.
+        if _trip_value:
+            df[_method_col] = df[_method_col].fillna(_trip_value)
     df["kept"] = df["kept"].fillna(False).astype(bool)
 
     data_key, seed_key, ver_key = f"{key}_data", f"{key}_seed", f"{key}_ver"
@@ -939,6 +960,20 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
         st.session_state[data_key] = df.reset_index(drop=True)
         st.session_state[ver_key] += 1
     base = st.session_state[data_key]
+    # A new row inherits the method you last chose, falling back to the trip's.
+    # Set spoons on the first fish and the rest follow, so a run of them costs
+    # one click rather than one per fish. Copied, not written back to session
+    # state: this is a display default, and persisting it would turn a value
+    # the angler never touched into an explicit override.
+    base = base.copy()
+    for _col, _trip_value in (("bait_lure", trip_bait), ("fishing_style", trip_style)):
+        if _col not in base.columns:
+            continue
+        _filled = base[_col].dropna()
+        _last = _filled.iloc[-1] if not _filled.empty else None
+        _default = _last if _last not in (None, "") else _trip_value
+        if _default:
+            base[_col] = base[_col].fillna(_default)
     widget_key = f"{key}_v{st.session_state[ver_key]}"
 
     # Header + every data row + the blank add-row, plus a small pad so
@@ -954,8 +989,25 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
                                                     help="Depth at which this fish was caught (optional)"),
             "weight": st.column_config.NumberColumn("Weight (lb)", min_value=0.0, step=0.1, format="%.2f"),
             "kept": st.column_config.CheckboxColumn("Kept?", help="Checked = harvested/kept; unchecked = released", default=False),
+            "bait_lure": st.column_config.SelectboxColumn(
+                "Bait",
+                options=[SAME_AS_TRIP] + [b for b in dict.fromkeys(
+                    list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
+                    + list(extra_baits or []) + ([trip_bait] if trip_bait else []))],
+                required=False,
+                help="Defaults to the trip's bait. Change it for a fish that came on "
+                     f"something else, or pick \"{SAME_AS_TRIP}\" to clear it."),
+            "fishing_style": st.column_config.SelectboxColumn(
+                "Style",
+                options=[SAME_AS_TRIP] + [s_ for s_ in dict.fromkeys(
+                    list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
+                    + list(extra_styles or []) + ([trip_style] if trip_style else []))],
+                required=False,
+                help="Defaults to the trip's style. Change it for a fish caught a "
+                     f"different way, or pick \"{SAME_AS_TRIP}\" to clear it."),
         },
-        column_order=["species", "length", "depth", "weight", "kept"],
+        column_order=["species", "length", "depth", "weight", "kept",
+                      "bait_lure", "fishing_style"],
         key=widget_key,
     )
 
@@ -996,15 +1048,66 @@ def _fish_from_editor(edited: pd.DataFrame) -> list:
         kept = bool(r["kept"]) if pd.notna(r.get("kept")) else False
         depth_val = r.get("depth")
         depth = float(depth_val) if pd.notna(depth_val) and depth_val else None
-        out.append({"species": sp, "length": length, "weight": weight, "kept": kept, "depth": depth})
+        def _method(col):
+            v = r.get(col)
+            if pd.isna(v):
+                return None
+            v = str(v).strip()
+            # The sentinel means "same as the trip", which is stored as NULL.
+            return None if not v or v == SAME_AS_TRIP else v
+        out.append({"species": sp, "length": length, "weight": weight, "kept": kept,
+                    "depth": depth,
+                    "bait_lure": _method("bait_lure"),
+                    "fishing_style": _method("fishing_style")})
     return out
+
+
+
+def _extra_methods(key: str) -> tuple:
+    """Per-fish baits/styles the angler typed in that aren't in the pick-lists.
+
+    Kept separate from the trip section's "Add new bait" box on purpose. That
+    box defines the trip's PRIMARY method, so using it to introduce a technique
+    you only tried on four fish would relabel the whole outing. These stay
+    local to the catch table and are offered as options there.
+
+    Only for the current run of the app: once a fish is saved with one, it
+    shows up in the pick-lists on its own, because _methods_by_frequency reads
+    fish rows as well as sessions.
+    """
+    bait_key, style_key = f"{key}_xbait", f"{key}_xstyle"
+    baits = st.session_state.setdefault(bait_key, [])
+    styles = st.session_state.setdefault(style_key, [])
+
+    with st.expander("➕ Use a bait or style that isn't in the list"):
+        st.caption(
+            "Adds it to the per-fish dropdowns below **without** changing the trip's "
+            "primary bait and style up top. Use this for a secondary technique you "
+            "only tried for a few fish."
+        )
+        c1, c2, c3 = st.columns([3, 3, 1.4])
+        nb = c1.text_input("New bait / lure", key=f"{bait_key}_in")
+        ns = c2.text_input("New fishing style", key=f"{style_key}_in")
+        c3.write("")
+        if c3.button("Add", key=f"{key}_xadd"):
+            if nb.strip() and nb.strip() not in baits:
+                baits.append(nb.strip())
+            if ns.strip() and ns.strip() not in styles:
+                styles.append(ns.strip())
+        if baits or styles:
+            st.caption("Available on this trip: "
+                       + ", ".join(baits + styles))
+    return baits, styles
 
 
 def _bulk_key(key: str) -> str:
     return f"{key}_bulk"
 
 
-def _bulk_fish_section(key: str) -> list:
+def _bulk_fish_section(key: str, trip_bait: str | None = None,
+                       trip_style: str | None = None,
+                       extra_baits: list | None = None,
+                       extra_styles: list | None = None) -> list:
     """Quick-add for fish that were counted but not measured one by one.
 
     Returns the staged groups, each {species, count, len_min, len_max, kept},
@@ -1039,10 +1142,32 @@ def _bulk_fish_section(key: str) -> list:
         kept = c5.checkbox("Kept?", key=f"{state_key}_kept",
                            help="Checked = harvested; unchecked = released")
 
+        # One method per group — a group is "these fish share a story", and the
+        # method is part of that story. Two techniques on one day means two
+        # groups, which keeps the attribution exact without asking for a
+        # dropdown on all seventeen fish.
+        m1, m2 = st.columns(2)
+        bait_opts = [SAME_AS_TRIP] + list(dict.fromkeys(
+            list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
+            + list(extra_baits or []) + ([trip_bait] if trip_bait else [])))
+        style_opts = [SAME_AS_TRIP] + list(dict.fromkeys(
+            list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
+            + list(extra_styles or []) + ([trip_style] if trip_style else [])))
+        bait = m1.selectbox(
+            "Bait for this group", bait_opts,
+            index=bait_opts.index(trip_bait) if trip_bait in bait_opts else 0,
+            key=f"{state_key}_bait")
+        style = m2.selectbox(
+            "Style for this group", style_opts,
+            index=style_opts.index(trip_style) if trip_style in style_opts else 0,
+            key=f"{state_key}_style")
+
         if st.button("Add group", key=f"{state_key}_add"):
             try:
                 group = {"species": sp, "count": int(count), "kept": bool(kept),
-                         "len_min": lo or None, "len_max": hi or None}
+                         "len_min": lo or None, "len_max": hi or None,
+                         "bait_lure": None if bait == SAME_AS_TRIP else bait,
+                         "fishing_style": None if style == SAME_AS_TRIP else style}
                 data_entry.validate_fish([group])   # validate before staging
                 groups.append(group)
             except data_entry.ValidationError as exc:
@@ -1051,7 +1176,10 @@ def _bulk_fish_section(key: str) -> list:
         for i, g in enumerate(list(groups)):
             rng = (f' · {_num(g["len_min"])}"–{_num(g["len_max"])}"'
                    if g.get("len_min") and g.get("len_max") else " · sizes not noted")
-            label = f'{g["count"]} × {g["species"]}{rng} · {"kept" if g["kept"] else "released"}'
+            method = " · ".join(p for p in (g.get("bait_lure"), g.get("fishing_style")) if p)
+            method = f" · {method}" if method else ""
+            label = (f'{g["count"]} × {g["species"]}{rng}{method} · '
+                     f'{"kept" if g["kept"] else "released"}')
             row_l, row_r = st.columns([8, 1])
             row_l.write(f"• {label}")
             if row_r.button("Remove", key=f"{state_key}_rm{i}"):
@@ -1216,6 +1344,12 @@ def page_log_session():
     # before either of them can call st.rerun() — a rerun issued before the
     # form is processed silently discards the submit (nothing saves, nothing
     # clears, and the page looks stuck on the previous session).
+    # Trip details render ABOVE the map and the catch table: bait and style are
+    # set here and flow down as the per-fish defaults, so they have to be
+    # visible and chosen first. Execution order is unchanged — the form body
+    # below still runs before the picker and the editor, which is what keeps a
+    # pending save from being discarded by their reruns.
+    form_slot = st.container()
     picker_slot = st.container()
     fish_slot = st.container()
 
@@ -1235,7 +1369,7 @@ def page_log_session():
         else 0
     )
 
-    with st.form("session_form", clear_on_submit=True):
+    with form_slot, st.form("session_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
         with col1:
             d = st.date_input("Date", value=date.today())
@@ -1265,6 +1399,18 @@ def page_log_session():
             )
 
         # Bait + style: standard options merged with history; type a new one to add it.
+        #
+        # ONE of each, deliberately. This is the trip's primary method: it is what
+        # the fish rows default to, and on a skunked trip it is the only record of
+        # how the day was fished. It is also the denominator for success rate by
+        # method — two primaries would make a blank day count against both.
+        # Anything else you tried goes on the individual fish below.
+        st.markdown("**Primary method for this trip**")
+        st.caption(
+            "Pick the one bait and style the day was mostly about — every fish you "
+            "log below starts with these. Caught something a different way? Change "
+            "it on that fish in the catch table, or add a whole group for it."
+        )
         all_baits = list(dict.fromkeys(data_entry.BAIT_LURE_OPTIONS + prev_baits))
         bcol1, bcol2, bcol3, bcol4 = st.columns(4)
         with bcol1:
@@ -1272,14 +1418,16 @@ def page_log_session():
                 all_baits.index(last_bait) if last_bait in all_baits else 0
             )
             bait_choice = st.selectbox(
-                "Bait / lure", all_baits, index=bait_index
+                "Primary bait / lure", all_baits, index=bait_index,
+                help='The main way you fished today. It becomes the default on every fish below, and it is the only method recorded if you get skunked — so keep it to the one technique the day was really about.',
             )
         with bcol2:
             new_bait = st.text_input("Add new bait / lure")
         with bcol3:
             style_opts = data_entry.FISHING_STYLES
             fishing_style = st.selectbox(
-                "Style of fishing", style_opts, index=style_idx
+                "Primary style of fishing", style_opts, index=style_idx,
+                help='The main way you fished today. It becomes the default on every fish below, and it is the only method recorded if you get skunked — so keep it to the one technique the day was really about.',
             )
         with bcol4:
             new_style = st.text_input("Add new fishing style")
@@ -1301,9 +1449,20 @@ def page_log_session():
                    "(blanks are fine; whatever you enter feeds your Analytics). Skunked? "
                    "Just leave the table alone. The far-left checkbox selects rows "
                    "for deletion (check one and a 🗑 appears at the top of the table).")
+        st.caption("**Bait and Style** start as the trip's primary method. Change them on "
+                   "any fish caught a different way — the next row you add keeps "
+                   "whatever you last picked, so a run of them is one click, not one "
+                   "per fish.")
+        trip_bait = (new_bait.strip() or bait_choice) or None
+        trip_style = (new_style.strip() or fishing_style) or None
+        x_baits, x_styles = _extra_methods("catch_editor")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
-                                    defer_rerun=submitted)
-        bulk_groups = _bulk_fish_section("catch_editor")
+                                    defer_rerun=submitted,
+                                    trip_bait=trip_bait, trip_style=trip_style,
+                                    extra_baits=x_baits, extra_styles=x_styles)
+        bulk_groups = _bulk_fish_section("catch_editor",
+                                         trip_bait=trip_bait, trip_style=trip_style,
+                                         extra_baits=x_baits, extra_styles=x_styles)
         _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
 
     if submitted:
@@ -1700,7 +1859,7 @@ def _edit_form(detail: dict):
         bcol1, bcol2, bcol3, bcol4 = st.columns(4)
         with bcol1:
             bait_choice_e = st.selectbox(
-                "Bait / lure", edit_all_baits,
+                "Primary bait / lure", edit_all_baits,
                 index=_idx(edit_all_baits, existing_bait),
                 key=f"e_bait_{sid}",
             )
@@ -1710,7 +1869,7 @@ def _edit_form(detail: dict):
             )
         with bcol3:
             fishing_style_e = st.selectbox(
-                "Style of fishing", data_entry.FISHING_STYLES,
+                "Primary style of fishing", data_entry.FISHING_STYLES,
                 index=_idx(data_entry.FISHING_STYLES, existing_style),
                 key=f"e_style_{sid}",
             )
@@ -1725,8 +1884,15 @@ def _edit_form(detail: dict):
 
     with fish_slot:
         st.markdown("**Fish caught** (one row per fish)")
-        catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved)
-        bulk_groups = _bulk_fish_section(f"e_fish_{sid}")
+        trip_bait_e = (new_bait_e.strip() or bait_choice_e) or None
+        trip_style_e = (new_style_e.strip() or fishing_style_e) or None
+        x_baits_e, x_styles_e = _extra_methods(f"e_fish_{sid}")
+        catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved,
+                                    trip_bait=trip_bait_e, trip_style=trip_style_e,
+                                    extra_baits=x_baits_e, extra_styles=x_styles_e)
+        bulk_groups = _bulk_fish_section(f"e_fish_{sid}",
+                                         trip_bait=trip_bait_e, trip_style=trip_style_e,
+                                         extra_baits=x_baits_e, extra_styles=x_styles_e)
         _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
 
     if saved:
@@ -1775,6 +1941,30 @@ def _render_whats_working():
     else:
         st.caption("Not enough repeat data yet — a condition needs at least two "
                    "trips (with hours recorded) before it can rank here. Keep logging!")
+
+    # Per-fish attribution. The tables below are per-TRIP: they credit every
+    # fish on an outing to the one method recorded for it, which is wrong on
+    # exactly the days two techniques were used at once. This section counts
+    # each fish against the method that actually caught it.
+    for _title, _dim in (("What actually caught them — by bait",  "bait_lure"),
+                         ("What actually caught them — by style", "fishing_style")):
+        _tbl = analytics.by_method(_dim)
+        if _tbl is None or _tbl.empty:
+            continue
+        st.subheader(_title)
+        _show = _tbl.rename(columns={
+            _dim: _title.split("— by ")[-1].title(),
+            "total_fish": "fish", "trips": "trips",
+            "fish_per_hour": "fish/hr", "rate_trips": "rate from",
+        })
+        st.dataframe(_show, hide_index=True, width="stretch")
+        st.caption(
+            "**fish** counts every fish, credited to the method that caught it. "
+            "**fish/hr** is calculated only from trips where you used that one "
+            "method — on a trip running two techniques at once there is no way to "
+            "know how the hours divided, so the rate is left out rather than "
+            "guessed. **rate from** is how many trips fed that rate."
+        )
 
     sections = [
         ("Water temperature", analytics.by_water_temp(), "water_band"),

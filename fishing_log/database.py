@@ -260,68 +260,84 @@ def _fish_rows(session_id: int, fish_rows) -> list:
             "depth": float(f["depth"]) if f.get("depth") else None,
             "len_min": float(f["len_min"]) if f.get("len_min") else None,
             "len_max": float(f["len_max"]) if f.get("len_max") else None,
+            "bait_lure": f.get("bait_lure") or None,
+            "fishing_style": f.get("fishing_style") or None,
         }
         for f in fish_rows
         if f.get("species")
     ]
 
 
-# Whether fish.len_min/len_max exist (migrations/004_fish_size_range.sql).
-# Same cache-by-engine-identity approach as _trip_uuid_support above, for the
-# same reason: the test suite swaps in a fresh engine per test.
-_size_range_support: dict = {}
+# Optional `fish` columns added by later migrations. Cached by engine identity,
+# like _trip_uuid_support above and for the same reason: the test suite swaps in
+# a fresh engine per test, so keying on the engine keeps one test's schema from
+# poisoning the next.
+#
+#   len_min / len_max            migrations/004 - observed size range
+#   bait_lure / fishing_style    migrations/005 - per-fish method
+_fish_columns_cache: dict = {}
+
+# Every optional column, in the order they are written.
+_OPTIONAL_FISH_COLUMNS = ("len_min", "len_max", "bait_lure", "fishing_style")
 
 
-def has_size_range_columns(conn=None) -> bool:
-    """True when fish.len_min / fish.len_max are present.
+def fish_optional_columns(conn=None) -> set:
+    """Which optional `fish` columns this database actually has.
 
     Pass the connection you already hold whenever there is one. Inspecting the
     Engine instead checks out a SEPARATE connection, which against the
-    in-memory SQLite used by the tests is a different database entirely — the
+    in-memory SQLite used by the tests is a different database entirely - the
     sessions row written moments earlier is not visible there, and the child
     insert then fails its foreign key. Reusing the caller's connection also
     avoids a pointless round trip inside a write transaction.
     """
     engine = get_engine()
     key = id(engine)
-    if key not in _size_range_support:
+    if key not in _fish_columns_cache:
         try:
             from sqlalchemy import inspect as sa_inspect
             target = conn if conn is not None else engine
-            columns = {c["name"] for c in sa_inspect(target).get_columns("fish")}
-            _size_range_support[key] = {"len_min", "len_max"} <= columns
+            present = {c["name"] for c in sa_inspect(target).get_columns("fish")}
+            _fish_columns_cache[key] = {c for c in _OPTIONAL_FISH_COLUMNS if c in present}
         except Exception:
-            _size_range_support[key] = False
-    return _size_range_support[key]
+            _fish_columns_cache[key] = set()
+    return _fish_columns_cache[key]
+
+
+def has_size_range_columns(conn=None) -> bool:
+    """True when fish.len_min / fish.len_max are present (migrations/004)."""
+    return {"len_min", "len_max"} <= fish_optional_columns(conn)
+
+
+def has_fish_method_columns(conn=None) -> bool:
+    """True when fish.bait_lure / fish.fishing_style exist (migrations/005)."""
+    return {"bait_lure", "fishing_style"} <= fish_optional_columns(conn)
 
 
 def insert_fish_tx(conn, session_id: int, fish_rows) -> None:
     """Insert one row per fish on an existing transaction.
 
+    Optional columns are written only when the database actually has them, so
+    this works either side of migrations 004 and 005. Missing them costs detail,
+    never the trip: the fish still save, they just record no size range and no
+    per-fish method.
+
     Bulk-entered fish carry an observed size range in len_min/len_max with
     ``length`` left at 0; individually measured fish are the other way round.
-    The range columns are skipped entirely when migration 004 has not been
-    applied, so this works either side of it — the trip still saves, it just
-    records the count without the range.
+    bait_lure/fishing_style are NULL for a fish caught the way the trip was.
     """
     rows = _fish_rows(session_id, fish_rows)
     if not rows:
         return
     _assert_session_owned(conn, session_id)
-    if has_size_range_columns(conn):
-        sql = (
-            "INSERT INTO fish (session_id, species, length, weight, kept, depth, "
-            "len_min, len_max) VALUES (:session_id, :species, :length, :weight, "
-            ":kept, :depth, :len_min, :len_max)"
-        )
-    else:
-        sql = (
-            "INSERT INTO fish (session_id, species, length, weight, kept, depth) "
-            "VALUES (:session_id, :species, :length, :weight, :kept, :depth)"
-        )
-        rows = [{k: v for k, v in r.items() if k not in ("len_min", "len_max")}
-                for r in rows]
-    conn.execute(text(sql), rows)
+
+    columns = ["session_id", "species", "length", "weight", "kept", "depth"]
+    columns += [c for c in _OPTIONAL_FISH_COLUMNS if c in fish_optional_columns(conn)]
+    placeholders = ", ".join(f":{c}" for c in columns)
+    sql = f"INSERT INTO fish ({', '.join(columns)}) VALUES ({placeholders})"
+    # Trim each row to the columns being written; a stray key would make
+    # SQLAlchemy's executemany complain about an unconsumed parameter.
+    conn.execute(text(sql), [{c: r[c] for c in columns} for r in rows])
 
 
 def insert_fish(session_id: int, fish_rows) -> None:

@@ -30,7 +30,9 @@ CREATE TABLE fish (
     species TEXT, length REAL DEFAULT 0, weight REAL DEFAULT 0,
     kept INTEGER DEFAULT 0, depth REAL,
     -- migrations/004: observed size range for counted-but-unmeasured fish.
-    len_min REAL, len_max REAL
+    len_min REAL, len_max REAL,
+    -- migrations/005: per-fish method. NULL = "same as the trip".
+    bait_lure TEXT, fishing_style TEXT
 );
 CREATE TABLE spots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -850,3 +852,76 @@ def test_bulk_entry_rejects_bad_input(bad, msg):
     with pytest.raises(data_entry.ValidationError) as exc:
         data_entry.validate_fish([bad])
     assert msg in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Per-fish method attribution (migrations/005)
+#
+# The rule: a fish's own method wins; NULL means "caught the way the trip was".
+# That fallback is what lets the migration ship without a backfill.
+# ---------------------------------------------------------------------------
+
+def test_fish_method_defaults_to_the_trip():
+    """A fish with no method of its own is credited to the trip's method."""
+    data_entry.add_session(
+        {"date": "2026-07-01", "location_name": "SML", "hours_fished": 4,
+         "bait_lure": "Live Shad", "fishing_style": "Trolling"},
+        [{"species": "Striper", "length": 24}, {"species": "Striper", "length": 26}],
+    )
+    tbl = analytics.by_method("bait_lure")
+    row = tbl[tbl["bait_lure"] == "Live Shad"]
+    assert not row.empty and int(row.iloc[0]["total_fish"]) == 2
+
+
+def test_two_methods_on_one_trip_are_attributed_separately():
+    data_entry.add_session(
+        {"date": "2026-07-02", "location_name": "SML", "hours_fished": 5,
+         "bait_lure": "Live Shad", "fishing_style": "Trolling"},
+        [
+            {"species": "Striper", "length": 24},                       # trip's bait
+            {"species": "Striper", "length": 28, "bait_lure": "Spoon"},  # its own
+            {"species": "Striper", "count": 6, "len_min": 20, "len_max": 26,
+             "bait_lure": "Spoon"},                                      # bulk group
+        ],
+    )
+    tbl = analytics.by_method("bait_lure").set_index("bait_lure")
+    assert int(tbl.loc["Live Shad", "total_fish"]) == 1
+    assert int(tbl.loc["Spoon", "total_fish"]) == 7
+
+
+def test_rate_excludes_multi_method_trips():
+    """fish/hr must come only from trips where one method was the only method."""
+    # Single-method trip: 4 fish in 4 hours on Spoon -> 1.0/hr
+    data_entry.add_session(
+        {"date": "2026-07-03", "location_name": "SML", "hours_fished": 4,
+         "bait_lure": "Spoon"},
+        [{"species": "Striper", "count": 4}],
+    )
+    # Mixed trip: hours are unattributable, so it must not feed the rate.
+    data_entry.add_session(
+        {"date": "2026-07-04", "location_name": "SML", "hours_fished": 2,
+         "bait_lure": "Spoon"},
+        [{"species": "Striper", "count": 20, "bait_lure": "Spoon"},
+         {"species": "Striper", "count": 1, "bait_lure": "Live Shad"}],
+    )
+    tbl = analytics.by_method("bait_lure").set_index("bait_lure")
+    assert int(tbl.loc["Spoon", "total_fish"]) == 24      # every fish counted
+    assert int(tbl.loc["Spoon", "rate_trips"]) == 1       # only the clean trip
+    assert float(tbl.loc["Spoon", "fish_per_hour"]) == 1.0, \
+        "the mixed trip's 20 fish in 2 hours must not inflate the rate"
+
+
+def test_bulk_groups_can_carry_different_methods():
+    fish = data_entry.validate_fish([
+        {"species": "Striper", "count": 10, "bait_lure": "Spoon", "fishing_style": "Jigging"},
+        {"species": "Striper", "count": 7, "bait_lure": "Live Shad", "fishing_style": "Trolling"},
+    ])
+    assert len(fish) == 17
+    assert sum(1 for f in fish if f["bait_lure"] == "Spoon") == 10
+    assert sum(1 for f in fish if f["fishing_style"] == "Trolling") == 7
+
+
+def test_blank_method_is_stored_as_none_not_empty_string():
+    fish = data_entry.validate_fish(
+        [{"species": "Striper", "length": 20, "bait_lure": "  ", "fishing_style": ""}])
+    assert fish[0]["bait_lure"] is None and fish[0]["fishing_style"] is None

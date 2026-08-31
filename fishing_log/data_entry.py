@@ -244,6 +244,7 @@ def validate_fish(fish: List[dict]) -> List[dict]:
                 "kept": bool(item.get("kept")),
                 "depth": None,
                 "len_min": len_min, "len_max": len_max,
+                **_method_fields(item),
             }
             cleaned.extend(dict(row) for _ in range(count))
         else:
@@ -278,8 +279,28 @@ def validate_fish(fish: List[dict]) -> List[dict]:
                 # An individually measured fish carries no range — `length` is
                 # the real number. Kept explicit so every row has the same keys.
                 "len_min": None, "len_max": None,
+                **_method_fields(item),
             })
     return cleaned
+
+
+def _method_fields(item: dict) -> dict:
+    """Per-fish bait and style, or None meaning "same as the trip".
+
+    Storing None rather than copying the session's value down onto every fish
+    is deliberate: it keeps "this fish was caught the way the trip was" distinct
+    from "this fish was specifically caught on spoons", so editing a trip's
+    primary method later still flows through to the fish that never had one of
+    their own — and so every fish logged before migration 005 reads correctly
+    without a backfill.
+    """
+    def clean(value):
+        text = (value or "").strip()
+        return text or None
+    return {
+        "bait_lure": clean(item.get("bait_lure")),
+        "fishing_style": clean(item.get("fishing_style")),
+    }
 
 
 def _validate_size_range(species: str, item: dict):

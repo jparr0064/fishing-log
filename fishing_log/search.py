@@ -96,14 +96,17 @@ def get_session(session_id: int) -> Optional[dict]:
         if row is None:
             return None
 
-        # len_min/len_max carry the observed range for fish that were counted
-        # but not measured (migrations/004). Selected only when the columns
-        # exist, so this keeps working before that migration is applied — the
-        # DWR sizes string then simply omits the range clause.
-        _range_cols = ", len_min, len_max" if db.has_size_range_columns(conn) else ""
+        # Optional columns from later migrations, selected only where they
+        # exist so this keeps working before either has been applied:
+        #   len_min/len_max          004 — observed range for unmeasured fish
+        #   bait_lure/fishing_style  005 — per-fish method (NULL = as the trip)
+        _optional = db.fish_optional_columns(conn)
+        _extra = "".join(f", {c}" for c in
+                         ("len_min", "len_max", "bait_lure", "fishing_style")
+                         if c in _optional)
         fish = conn.execute(
             text(
-                f"SELECT species, length, weight, kept, depth{_range_cols} FROM fish "
+                f"SELECT species, length, weight, kept, depth{_extra} FROM fish "
                 "WHERE session_id = :sid ORDER BY species, id"
             ),
             {"sid": session_id},
@@ -276,19 +279,44 @@ def distinct_species() -> list:
 
 def baits_by_frequency() -> list:
     """Distinct bait/lures, most-used first."""
+    return _methods_by_frequency("bait_lure")
+
+
+def styles_by_frequency() -> list:
+    """Distinct fishing styles, most-used first."""
+    return _methods_by_frequency("fishing_style")
+
+
+def _methods_by_frequency(column: str) -> list:
+    """Methods this angler has actually used, most-used first.
+
+    Counts BOTH the trip's method and any method recorded on an individual
+    fish. Without the second half, a bait tried on four fish during a trip
+    logged as something else would vanish from the pick-lists the moment the
+    page reloaded — the angler would have to retype it every single time.
+    """
+    if column not in ("bait_lure", "fishing_style"):
+        raise ValueError("column must be 'bait_lure' or 'fishing_style'")
     with db.read_connection() as conn:
+        parts = [f"""
+            SELECT s.{column} AS m FROM sessions s
+            WHERE s.user_email = :email
+              AND s.{column} IS NOT NULL AND TRIM(s.{column}) <> ''
+        """]
+        if db.has_fish_method_columns(conn):
+            parts.append(f"""
+                SELECT f.{column} AS m
+                FROM fish f JOIN sessions s ON s.id = f.session_id
+                WHERE s.user_email = :email
+                  AND f.{column} IS NOT NULL AND TRIM(f.{column}) <> ''
+            """)
+        union = " UNION ALL ".join(parts)
         rows = conn.execute(
-            text("""
-                SELECT bait_lure, COUNT(*) AS n
-                FROM sessions
-                WHERE user_email = :email
-                  AND bait_lure IS NOT NULL AND TRIM(bait_lure) <> ''
-                GROUP BY bait_lure
-                ORDER BY n DESC, bait_lure
-            """),
+            text(f"SELECT m, COUNT(*) AS n FROM ({union}) u "
+                 "GROUP BY m ORDER BY n DESC, m"),
             {"email": _user()},
         ).mappings().all()
-    return [r["bait_lure"] for r in rows]
+    return [r["m"] for r in rows]
 
 
 def recent_defaults() -> dict:
