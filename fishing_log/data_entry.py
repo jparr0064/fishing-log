@@ -86,6 +86,10 @@ WEATHER_OPTIONS = ["Sunny", "Partly Cloudy", "Cloudy", "Overcast", "Rain", "Wind
 # Sanity bounds for numeric fields. Generous on purpose — they exist to catch
 # obvious typos (a 300" striper, a 500° water temp), not to police real catches.
 MAX_FISH_LENGTH_IN = 80.0
+# Upper bound on a single bulk catch row. Big days happen; a four-digit count
+# is a typo, and expanding one would write thousands of rows before anyone
+# noticed.
+MAX_BULK_COUNT = 500
 MAX_FISH_WEIGHT_LB = 150.0
 MAX_DEPTH_FT = 300.0
 MIN_TEMP_F, MAX_TEMP_F = -30.0, 130.0
@@ -224,7 +228,24 @@ def validate_fish(fish: List[dict]) -> List[dict]:
                 raise ValidationError(f"Catch count for '{species}' must be a whole number.")
             if count < 0:
                 raise ValidationError(f"Catch count for '{species}' cannot be negative.")
-            cleaned.extend({"species": species, "length": 0.0, "weight": 0.0} for _ in range(count))
+            if count > MAX_BULK_COUNT:
+                raise ValidationError(
+                    f"Catch count for '{species}' can't exceed {MAX_BULK_COUNT} in one "
+                    "entry — check for a typo.")
+            # Optional observed size range for fish that were counted but not
+            # measured one by one. It is recorded AS a range: length stays 0 so
+            # that analytics (which filters on length > 0) keeps these out of
+            # average-size and personal-best figures, and so that nothing can
+            # mistake an eyeballed span for a tape measurement. Never expand a
+            # range into per-fish lengths.
+            len_min, len_max = _validate_size_range(species, item)
+            row = {
+                "species": species, "length": 0.0, "weight": 0.0,
+                "kept": bool(item.get("kept")),
+                "depth": None,
+                "len_min": len_min, "len_max": len_max,
+            }
+            cleaned.extend(dict(row) for _ in range(count))
         else:
             try:
                 length = float(item.get("length") or 0)
@@ -254,8 +275,40 @@ def validate_fish(fish: List[dict]) -> List[dict]:
                 "species": species, "length": length, "weight": weight,
                 "kept": bool(item.get("kept")),
                 "depth": depth,
+                # An individually measured fish carries no range — `length` is
+                # the real number. Kept explicit so every row has the same keys.
+                "len_min": None, "len_max": None,
             })
     return cleaned
+
+
+def _validate_size_range(species: str, item: dict):
+    """Validate an optional observed size range on a bulk catch row.
+
+    Returns (len_min, len_max), both None when no range was given. Either both
+    ends are supplied or neither: a lone bound reads as a measurement it is not
+    ("20 fish, 23 inches" would be a lie about nineteen of them).
+    """
+    raw_min, raw_max = item.get("len_min"), item.get("len_max")
+    if raw_min in (None, "") and raw_max in (None, ""):
+        return None, None
+    if raw_min in (None, "") or raw_max in (None, ""):
+        raise ValidationError(
+            f"Give both ends of the size range for '{species}', or neither.")
+    try:
+        len_min, len_max = float(raw_min), float(raw_max)
+    except (TypeError, ValueError):
+        raise ValidationError(f"Size range for '{species}' must be numbers.")
+    if len_min <= 0 or len_max <= 0:
+        raise ValidationError(f"Size range for '{species}' must be greater than zero.")
+    if len_min > len_max:
+        raise ValidationError(
+            f"Size range for '{species}' is backwards — the smaller fish goes first.")
+    if len_max > MAX_FISH_LENGTH_IN:
+        raise ValidationError(
+            f"Size range for '{species}' can't exceed {MAX_FISH_LENGTH_IN:g}\" — "
+            "check for a typo.")
+    return len_min, len_max
 
 
 def validate_spots(spots: List[dict]) -> List[dict]:

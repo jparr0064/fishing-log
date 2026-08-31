@@ -28,7 +28,9 @@ CREATE TABLE fish (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     species TEXT, length REAL DEFAULT 0, weight REAL DEFAULT 0,
-    kept INTEGER DEFAULT 0, depth REAL
+    kept INTEGER DEFAULT 0, depth REAL,
+    -- migrations/004: observed size range for counted-but-unmeasured fish.
+    len_min REAL, len_max REAL
 );
 CREATE TABLE spots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -749,3 +751,102 @@ def test_write_scoping():
     # set_dwr_filed as TEST_EMAIL: returns 0 (no rows touched)
     n_updated = data_entry.set_dwr_filed(other_sid, True)
     assert n_updated == 0
+
+
+# ---------------------------------------------------------------------------
+# Bulk catch entry with an observed size range (migrations/004)
+#
+# The rule these tests exist to protect: a range is one angler's estimate of a
+# span, and must never be turned into per-fish lengths. It is reported AS a
+# range so a DWR biologist can tell measured data from eyeballed data.
+# ---------------------------------------------------------------------------
+
+def test_bulk_group_expands_without_inventing_lengths():
+    fish = data_entry.validate_fish(
+        [{"species": "Striper", "count": 17, "len_min": 23, "len_max": 30}])
+    assert len(fish) == 17
+    assert {f["length"] for f in fish} == {0.0}, "no fish may be given a fabricated length"
+    assert all(f["len_min"] == 23 and f["len_max"] == 30 for f in fish)
+
+
+def test_bulk_and_measured_fish_coexist_on_one_trip():
+    sid = data_entry.add_session(
+        {"date": "2026-08-15", "location_name": "SML", "num_anglers": 2,
+         "start_time": "06:00", "end_time": "11:00"},
+        [
+            {"species": "Striper", "length": 28, "weight": 8},
+            {"species": "Striper", "length": 31, "weight": 11},
+            {"species": "Striper", "count": 17, "len_min": 23, "len_max": 30},
+        ],
+    )
+    detail = search.get_session(sid)
+    assert detail["total_fish"] == 19
+    measured = [f for f in detail["fish"] if f["length"]]
+    assert sorted(f["length"] for f in measured) == [28.0, 31.0]
+
+
+def test_dwr_sizes_label_the_range_and_keep_measurements():
+    from fishing_log import dwr_report
+    fish = data_entry.validate_fish([
+        {"species": "Striper", "length": 28},
+        {"species": "Striper", "count": 17, "len_min": 23, "len_max": 30},
+    ])
+    out = dwr_report.summarize({"date": "2026-08-15", "fish": fish})
+    assert out["released_n"] == 18
+    sizes = out["released_sizes"]
+    assert sizes.startswith('28"'), "real measurements are listed individually"
+    assert 'plus 17 fish 23"-30" (range)' in sizes
+    # Exactly three inch marks: the one real measurement, plus the two ends of
+    # the range. Seventeen fish contribute two numbers, not seventeen.
+    assert sizes.count('"') == 3, "no extra per-fish sizes invented from the range"
+
+
+def test_dwr_range_notice_is_stripers_only():
+    from fishing_log import dwr_report
+    perch = data_entry.validate_fish(
+        [{"species": "White Perch", "count": 30, "len_min": 8, "len_max": 11}])
+    assert dwr_report.range_notice({"fish": perch}) is None
+    striper = data_entry.validate_fish(
+        [{"species": "Striper", "count": 4, "len_min": 20, "len_max": 25}])
+    assert dwr_report.range_notice({"fish": striper}) is not None
+
+
+def test_two_ranges_stay_distinct():
+    from fishing_log import dwr_report
+    fish = data_entry.validate_fish([
+        {"species": "Striper", "count": 5, "len_min": 20, "len_max": 24},
+        {"species": "Striper", "count": 9, "len_min": 28, "len_max": 34},
+    ])
+    sizes = dwr_report.summarize({"date": "x", "fish": fish})["released_sizes"]
+    assert 'plus 5 fish 20"-24" (range)' in sizes
+    assert 'plus 9 fish 28"-34" (range)' in sizes
+
+
+def test_ranged_fish_stay_out_of_size_statistics():
+    """A personal best must be a fish somebody actually measured."""
+    data_entry.add_session(
+        {"date": "2026-08-16", "location_name": "SML"},
+        [
+            {"species": "Striper", "length": 26, "weight": 6},
+            {"species": "Striper", "count": 10, "len_min": 30, "len_max": 40},
+        ],
+    )
+    pb = analytics.personal_bests()
+    row = pb[pb["species"] == "Striper"]
+    assert not row.empty
+    # The ranged fish were entered as 30-40"; the only measured one was 26".
+    # The personal best must be the measured fish.
+    assert float(row.iloc[0]["longest_in"]) == 26.0, \
+        "an estimated range must never set a personal best"
+
+
+@pytest.mark.parametrize("bad,msg", [
+    ({"species": "Striper", "count": 5, "len_min": 30, "len_max": 20}, "backwards"),
+    ({"species": "Striper", "count": 5, "len_min": 23}, "both ends"),
+    ({"species": "Striper", "count": 99999}, "exceed"),
+    ({"species": "Striper", "count": 5, "len_min": 23, "len_max": 900}, "exceed"),
+])
+def test_bulk_entry_rejects_bad_input(bad, msg):
+    with pytest.raises(data_entry.ValidationError) as exc:
+        data_entry.validate_fish([bad])
+    assert msg in str(exc.value)

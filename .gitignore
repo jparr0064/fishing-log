@@ -8,7 +8,10 @@ __pycache__/
 data/
 
 # Streamlit secrets (contains Supabase credentials)
-.streamlit/secrets.toml
+# Glob, not just secrets.toml: the sandbox uses secrets.sandbox.toml, and this
+# repo is public — an exact-filename rule would have let that one through.
+.streamlit/secrets*
+
 
 # Desktop launchers and icons (machine-specific)
 *.lnk

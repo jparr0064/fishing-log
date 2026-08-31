@@ -96,9 +96,14 @@ def get_session(session_id: int) -> Optional[dict]:
         if row is None:
             return None
 
+        # len_min/len_max carry the observed range for fish that were counted
+        # but not measured (migrations/004). Selected only when the columns
+        # exist, so this keeps working before that migration is applied — the
+        # DWR sizes string then simply omits the range clause.
+        _range_cols = ", len_min, len_max" if db.has_size_range_columns(conn) else ""
         fish = conn.execute(
             text(
-                "SELECT species, length, weight, kept, depth FROM fish "
+                f"SELECT species, length, weight, kept, depth{_range_cols} FROM fish "
                 "WHERE session_id = :sid ORDER BY species, id"
             ),
             {"sid": session_id},

@@ -258,25 +258,70 @@ def _fish_rows(session_id: int, fish_rows) -> list:
             "weight": float(f.get("weight") or 0),
             "kept": int(bool(f.get("kept"))),
             "depth": float(f["depth"]) if f.get("depth") else None,
+            "len_min": float(f["len_min"]) if f.get("len_min") else None,
+            "len_max": float(f["len_max"]) if f.get("len_max") else None,
         }
         for f in fish_rows
         if f.get("species")
     ]
 
 
+# Whether fish.len_min/len_max exist (migrations/004_fish_size_range.sql).
+# Same cache-by-engine-identity approach as _trip_uuid_support above, for the
+# same reason: the test suite swaps in a fresh engine per test.
+_size_range_support: dict = {}
+
+
+def has_size_range_columns(conn=None) -> bool:
+    """True when fish.len_min / fish.len_max are present.
+
+    Pass the connection you already hold whenever there is one. Inspecting the
+    Engine instead checks out a SEPARATE connection, which against the
+    in-memory SQLite used by the tests is a different database entirely — the
+    sessions row written moments earlier is not visible there, and the child
+    insert then fails its foreign key. Reusing the caller's connection also
+    avoids a pointless round trip inside a write transaction.
+    """
+    engine = get_engine()
+    key = id(engine)
+    if key not in _size_range_support:
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            target = conn if conn is not None else engine
+            columns = {c["name"] for c in sa_inspect(target).get_columns("fish")}
+            _size_range_support[key] = {"len_min", "len_max"} <= columns
+        except Exception:
+            _size_range_support[key] = False
+    return _size_range_support[key]
+
+
 def insert_fish_tx(conn, session_id: int, fish_rows) -> None:
-    """Insert one row per fish on an existing transaction."""
+    """Insert one row per fish on an existing transaction.
+
+    Bulk-entered fish carry an observed size range in len_min/len_max with
+    ``length`` left at 0; individually measured fish are the other way round.
+    The range columns are skipped entirely when migration 004 has not been
+    applied, so this works either side of it — the trip still saves, it just
+    records the count without the range.
+    """
     rows = _fish_rows(session_id, fish_rows)
     if not rows:
         return
     _assert_session_owned(conn, session_id)
-    conn.execute(
-        text(
+    if has_size_range_columns(conn):
+        sql = (
+            "INSERT INTO fish (session_id, species, length, weight, kept, depth, "
+            "len_min, len_max) VALUES (:session_id, :species, :length, :weight, "
+            ":kept, :depth, :len_min, :len_max)"
+        )
+    else:
+        sql = (
             "INSERT INTO fish (session_id, species, length, weight, kept, depth) "
             "VALUES (:session_id, :species, :length, :weight, :kept, :depth)"
-        ),
-        rows,
-    )
+        )
+        rows = [{k: v for k, v in r.items() if k not in ("len_min", "len_max")}
+                for r in rows]
+    conn.execute(text(sql), rows)
 
 
 def insert_fish(session_id: int, fish_rows) -> None:

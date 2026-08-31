@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-07-26.1"
+APP_BUILD = "2026-08-31.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -895,6 +895,9 @@ def _reset_fish_editor(key: str):
         st.session_state.pop(k, None)
     ver = st.session_state.pop(f"{key}_ver", 0)
     st.session_state.pop(f"{key}_v{ver}", None)
+    # Staged bulk groups belong to the same catch — clearing the table but
+    # leaving these behind would silently re-add them to the next trip.
+    st.session_state.pop(_bulk_key(key), None)
 
 
 def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False):
@@ -995,6 +998,100 @@ def _fish_from_editor(edited: pd.DataFrame) -> list:
         depth = float(depth_val) if pd.notna(depth_val) and depth_val else None
         out.append({"species": sp, "length": length, "weight": weight, "kept": kept, "depth": depth})
     return out
+
+
+def _bulk_key(key: str) -> str:
+    return f"{key}_bulk"
+
+
+def _bulk_fish_section(key: str) -> list:
+    """Quick-add for fish that were counted but not measured one by one.
+
+    Returns the staged groups, each {species, count, len_min, len_max, kept},
+    which validate_fish expands into N rows carrying the range with length 0.
+
+    These are kept OUT of the data editor on purpose. Adding seventeen rows to
+    the table to represent seventeen unmeasured fish would defeat the point of
+    a bulk entry, and every one of them would render as a row you could then
+    "measure", implying a precision that was never there.
+
+    Like the editor itself this must live outside st.form, since its buttons
+    have to be handled server-side while the page is still interactive.
+    """
+    state_key = _bulk_key(key)
+    groups = st.session_state.setdefault(state_key, [])
+
+    with st.expander("➕ Add a group of fish (counted, not measured)", expanded=bool(groups)):
+        st.caption(
+            "For the tail end of a big day — the fish you counted but didn't put a "
+            "tape on. Give the count and, if you noted it, the range of sizes you saw. "
+            "The range is recorded **as a range**; it is never turned into individual "
+            "lengths."
+        )
+        c1, c2, c3, c4, c5 = st.columns([3, 1.4, 1.4, 1.4, 1.2])
+        sp = c1.selectbox("Species", SPECIES, key=f"{state_key}_sp")
+        count = c2.number_input("How many", min_value=1, max_value=int(data_entry.MAX_BULK_COUNT),
+                                value=1, step=1, key=f"{state_key}_n")
+        lo = c3.number_input("Smallest (in)", min_value=0.0, step=0.5, value=0.0,
+                             key=f"{state_key}_lo", help="Optional — leave 0 if you didn't note sizes")
+        hi = c4.number_input("Largest (in)", min_value=0.0, step=0.5, value=0.0,
+                             key=f"{state_key}_hi", help="Optional — leave 0 if you didn't note sizes")
+        kept = c5.checkbox("Kept?", key=f"{state_key}_kept",
+                           help="Checked = harvested; unchecked = released")
+
+        if st.button("Add group", key=f"{state_key}_add"):
+            try:
+                group = {"species": sp, "count": int(count), "kept": bool(kept),
+                         "len_min": lo or None, "len_max": hi or None}
+                data_entry.validate_fish([group])   # validate before staging
+                groups.append(group)
+            except data_entry.ValidationError as exc:
+                st.error(str(exc))
+
+        for i, g in enumerate(list(groups)):
+            rng = (f' · {_num(g["len_min"])}"–{_num(g["len_max"])}"'
+                   if g.get("len_min") and g.get("len_max") else " · sizes not noted")
+            label = f'{g["count"]} × {g["species"]}{rng} · {"kept" if g["kept"] else "released"}'
+            row_l, row_r = st.columns([8, 1])
+            row_l.write(f"• {label}")
+            if row_r.button("Remove", key=f"{state_key}_rm{i}"):
+                groups.pop(i)
+                st.rerun()
+
+    return groups
+
+
+def _num(v) -> str:
+    """Trim a trailing .0 so 23.0 shows as 23."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return ""
+    return str(int(f)) if f == int(f) else str(f)
+
+
+def _dwr_size_preview(fish_items: list):
+    """Show the exact DWR sizes text when this catch will report a range.
+
+    Rendered live while the catch is being entered, from the same
+    dwr_report.range_notice() the DWR card uses later, so the angler is never
+    told one thing here and shown another on the form. Stripers only — DWR's
+    journal covers nothing else.
+    """
+    try:
+        fish = data_entry.validate_fish(fish_items)
+    except data_entry.ValidationError:
+        return                      # mid-edit; the save path reports the error
+    notice = dwr_report.range_notice({"fish": fish})
+    if not notice:
+        return
+    harvested_sizes, released_sizes, _n = notice
+    st.info(
+        "**This is what the DWR form will show for sizes:**\n\n"
+        f"- Harvested: `{harvested_sizes}`\n"
+        f"- Released: `{released_sizes}`\n\n"
+        "Add individual lengths if you don't want the range displayed on the DWR form."
+    )
 
 
 def _dwr_nudge(sid: int):
@@ -1206,9 +1303,13 @@ def page_log_session():
                    "for deletion (check one and a 🗑 appears at the top of the table).")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
                                     defer_rerun=submitted)
+        bulk_groups = _bulk_fish_section("catch_editor")
+        _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
 
     if submitted:
-        fish = _fish_from_editor(catch_editor)
+        # Measured fish from the table, then any counted-but-unmeasured groups.
+        # validate_fish expands each group into N rows carrying its range.
+        fish = _fish_from_editor(catch_editor) + bulk_groups
         # Spots from the map. No fallback: a trip with no spot saves with no
         # coordinates rather than inventing a pin at the lake default (which
         # fabricated a fishing location and distorted the Map page).
@@ -1625,9 +1726,11 @@ def _edit_form(detail: dict):
     with fish_slot:
         st.markdown("**Fish caught** (one row per fish)")
         catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved)
+        bulk_groups = _bulk_fish_section(f"e_fish_{sid}")
+        _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
 
     if saved:
-        fish = _fish_from_editor(catch_editor)
+        fish = _fish_from_editor(catch_editor) + bulk_groups
         spots = list(st.session_state.get(f"edit_spots_{sid}", []))
         session = {
             "date": d, "start_time": start_time, "end_time": end_time,

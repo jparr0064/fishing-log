@@ -38,9 +38,37 @@ def _fmt_num(value) -> str:
 
 
 def _sizes(rows) -> str:
-    """Comma-separated lengths with the inch symbol on each, e.g. '31", 28"'."""
-    vals = [_fmt_num(f.get("length")) for f in rows if f.get("length")]
-    return ", ".join(f"{v}{UNIT}" for v in vals if v)
+    """Sizes for the DWR free-text box: measured lengths, then any ranges.
+
+    Two kinds of fish can appear on one trip. Individually measured fish have a
+    ``length`` and are listed one by one. Bulk-entered fish were counted but not
+    measured; they carry an observed span in ``len_min``/``len_max`` and are
+    summarised as a single labelled clause:
+
+        31", 28", 24", plus 17 fish 23"-30" (range)
+
+    A range is NEVER expanded into per-fish lengths. It went in as one angler's
+    estimate of a span and it comes out saying exactly that, so the biologist
+    reading the form can tell measured data from eyeballed data. The angler
+    reviews this text on the pre-filled form and can edit it before submitting.
+    """
+    measured = [_fmt_num(f.get("length")) for f in rows if f.get("length")]
+    parts = [f"{v}{UNIT}" for v in measured if v]
+
+    # Group unmeasured fish by the range they were entered under, so two bulk
+    # rows on one trip stay distinguishable instead of being merged into a
+    # misleadingly wide single span.
+    buckets: dict = {}
+    for f in rows:
+        if f.get("length"):
+            continue
+        lo, hi = f.get("len_min"), f.get("len_max")
+        if lo and hi:
+            buckets[(_fmt_num(lo), _fmt_num(hi))] = buckets.get((_fmt_num(lo), _fmt_num(hi)), 0) + 1
+    for (lo, hi), n in buckets.items():
+        parts.append(f"plus {n} fish {lo}{UNIT}-{hi}{UNIT} (range)")
+
+    return ", ".join(parts)
 
 
 def summarize(session: dict) -> dict:
@@ -66,6 +94,30 @@ def summarize(session: dict) -> dict:
         "released_n": released_n,
         "released_sizes": "N/A" if released_n == 0 else (_sizes(released) or "Not measured"),
     }
+
+
+def range_notice(session: dict):
+    """Advisory for a trip whose DWR sizes will include an estimated range.
+
+    Returns (harvested_sizes, released_sizes, n_ranged) when any striper on the
+    trip was bulk-entered under a size range, else None. The app shows this
+    while the catch is being entered AND on the DWR card, from this one
+    function, so what the angler is warned about is character-for-character
+    what the form will carry.
+
+    Stripers only — DWR's journal covers nothing else, so a thirty-fish perch
+    day raises no notice at all.
+    """
+    stripers = [
+        f for f in session.get("fish", [])
+        if (f.get("species") or "").strip().lower() == SPECIES.lower()
+    ]
+    ranged = [f for f in stripers
+              if not f.get("length") and f.get("len_min") and f.get("len_max")]
+    if not ranged:
+        return None
+    summary = summarize(session)
+    return summary["harvested_sizes"], summary["released_sizes"], len(ranged)
 
 
 def check_form_health(timeout: float = 10.0):
