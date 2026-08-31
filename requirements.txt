@@ -40,7 +40,7 @@ altair>=5.0
 # ⚠ #13461 is still OPEN upstream and the OIDC callback has NO automated
 # coverage — it cannot be exercised locally. Verify by actually signing in with
 # Google after deploying. To roll back: pin Authlib==1.6.5 and redeploy.
-Authlib==1.6.12
+Authlib==1.7.2
 
 # Required BY Authlib's starlette integration, which is what streamlit imports
 # to build the Google OAuth client. Authlib declares httpx as an optional extra
