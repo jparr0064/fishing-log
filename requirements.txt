@@ -55,4 +55,4 @@ httpx>=0.27
 # PYSEC-2026-113 (use-after-free reading malicious Arrow IPC files). This app
 # never reads user-supplied Arrow files, so exposure is remote — but the fix is
 # free.
-pyarrow>=23.0.1,<25
+pyarrow>=25.0.1,<26
