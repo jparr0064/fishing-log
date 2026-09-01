@@ -1777,39 +1777,59 @@ def _browse_detail_view(detail: dict, sid: int):
 
 
 def _render_session_detail(detail: dict, sid: int):
-    """Full read/edit detail for one session (used by the Browse cards)."""
-    detail_spots = detail.get("spots") or []
+    """One trip: either read it, or edit it — never both at once.
 
-    # Actions up top so nobody has to scroll to find them.
+    Editing used to open an expander that pushed a full entry form ABOVE the
+    read-only summary, so the same trip appeared twice on one screen, once
+    editable and once not. Now editing swaps the view, the same way opening a
+    trip swaps away from the list.
+    """
+    detail_spots = detail.get("spots") or []
+    edit_key = f"editing_{sid}"
+
+    if st.session_state.get(edit_key) and not _is_demo():
+        if st.button("←  Cancel editing", key=f"cancel_edit_{sid}"):
+            st.session_state.pop(edit_key, None)
+            _clear_spot_state(f"edit_spots_{sid}", f"edit_map_{sid}")
+            _reset_fish_editor(f"e_fish_{sid}")
+            st.rerun()
+
+        st.subheader("✏️ Editing this trip")
+        if detail.get("dwr_filed"):
+            filed_on = detail.get("dwr_filed_at")
+            st.warning(
+                "This trip's DWR striper report was already filed"
+                + (f" on {filed_on}" if filed_on else "")
+                + " — changes you save here won't update what the state received. "
+                "If the catch details changed materially, contact DWR directly.",
+                icon="📋",
+            )
+            if st.button("Marked as filed by mistake? Unmark", key=f"unfile_{sid}"):
+                try:
+                    data_entry.set_dwr_filed(sid, False)
+                except data_entry.SaveError as exc:
+                    st.error(str(exc), icon="⚠️")
+                else:
+                    st.session_state.pop(f"dwr_filed_{sid}", None)
+                    _refresh()
+                    st.rerun()
+
+        skey = f"edit_spots_{sid}"
+        if skey not in st.session_state:
+            st.session_state[skey] = [
+                {"lat": s["latitude"], "lon": s["longitude"],
+                 "caught": bool(s.get("caught")),
+                 "fish_count": s.get("fish_count")}
+                for s in detail.get("spots", [])
+            ]
+        _edit_form(detail)
+        return
+
     if not _is_demo():
-        with st.expander("✏️ Edit this session"):
-            if detail.get("dwr_filed"):
-                filed_on = detail.get("dwr_filed_at")
-                st.warning(
-                    "This trip's DWR striper report was already filed"
-                    + (f" on {filed_on}" if filed_on else "")
-                    + " — changes you save here won't update what the state received. "
-                    "If the catch details changed materially, contact DWR directly.",
-                    icon="📋",
-                )
-                if st.button("Marked as filed by mistake? Unmark", key=f"unfile_{sid}"):
-                    try:
-                        data_entry.set_dwr_filed(sid, False)
-                    except data_entry.SaveError as exc:
-                        st.error(str(exc), icon="⚠️")
-                    else:
-                        st.session_state.pop(f"dwr_filed_{sid}", None)
-                        _refresh()
-                        st.rerun()
-            skey = f"edit_spots_{sid}"
-            if skey not in st.session_state:
-                st.session_state[skey] = [
-                    {"lat": s["latitude"], "lon": s["longitude"],
-                     "caught": bool(s.get("caught")),
-                     "fish_count": s.get("fish_count")}
-                    for s in detail.get("spots", [])
-                ]
-            _edit_form(detail)
+        if st.button("✏️  Edit this trip", key=f"edit_{sid}",
+                     use_container_width=True):
+            st.session_state[edit_key] = True
+            st.rerun()
 
     left, right = st.columns(2)
     with left:
@@ -2103,6 +2123,8 @@ def _edit_form(detail: dict):
             # Reset edit state so the expander collapses and reloads fresh.
             _clear_spot_state(f"edit_spots_{sid}", f"edit_map_{sid}")
             _reset_fish_editor(f"e_fish_{sid}")
+            _reset_bulk_groups(f"e_fish_{sid}")
+            st.session_state.pop(f"editing_{sid}", None)   # back to reading it
             st.session_state["saved_msg"] = f"✅ Trip #{sid} changes saved."
             st.rerun()
         except data_entry.ValidationError as exc:

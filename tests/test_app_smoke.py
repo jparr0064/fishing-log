@@ -318,6 +318,11 @@ def test_editing_a_trip_uses_the_same_three_sections_as_logging_one(db_url):
     at.session_state["browse_sel"] = 1
     at.run()
     _assert_no_exception(at)
+    # Reading a trip and editing it are separate views now, so the entry
+    # screen only exists once editing has started.
+    at.session_state["editing_1"] = True
+    at.run()
+    _assert_no_exception(at)
     edit_headings = {h.value for h in at.subheader}
 
     for section in ("1 · The trip", "2 · Where you fished", "3 · What you caught"):
