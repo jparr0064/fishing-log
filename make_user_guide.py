@@ -260,6 +260,21 @@ B("<b>What's Working:</b> your most productive water temps, weather, baits, styl
   "ranked by fish per hour.")
 
 # ---- Map ----
+story.append(Paragraph("Backing up from a phone", h2))
+story.append(Paragraph(
+    "The download works fine on a phone, but where it lands matters. On an iPhone it goes to "
+    "<b>Files \u2192 Downloads</b>; on Android, your <b>Downloads</b> folder.", body))
+story.append(Paragraph(
+    "<b>Then move it off the phone.</b> A backup that only exists on your phone does not "
+    "survive losing your phone, and there is no copy on our side to fall back on. On an "
+    "iPhone: Files \u2192 Downloads \u2192 press and hold the file \u2192 Move \u2192 iCloud Drive. On "
+    "Android: Files \u2192 Downloads \u2192 Share \u2192 Save to Drive. Emailing it to yourself works "
+    "on either and is the easiest to find again later.", body))
+story.append(Paragraph(
+    "<b>If the download button seems to do nothing</b>, you are probably in an in-app browser \u2014 "
+    "the one that opens when you tap a link inside Facebook or Messenger. Those block "
+    "downloads. Open the app in Safari or Chrome instead and it will work.", tip))
+
 story.append(Paragraph("7. Map", h1))
 B("Every trip's spot on one map, color-coded by how the day went: Skunked (0), Good (1–3), "
   "Great (4–6), Blowout (7+).")
@@ -303,9 +318,9 @@ faq = [
      "those reports just as much. Tick No fish caught (skunked trip) in section 3 and save."),
     ("I made a mistake on a trip.", "Browse &amp; Search → Open trip → Edit this trip. Fix it and "
      "press Save changes. Cancel editing backs out without changing anything."),
-    ("Can I lose my data?", "It lives in a cloud database, not on your phone. For belt-and-suspenders, "
-     "download a full backup ZIP now and then — if anything ever goes wrong, the Restore button "
-     "puts it all back."),
+    ("Can I lose my data?", "It lives in a cloud database, not on your phone. There is no second "
+     "copy on our side, though, so download a full backup ZIP every month or so — the Restore "
+     "button puts everything back from it. See section 6 for doing this on a phone."),
     ("Something looks broken.", "Note what page you were on and what you clicked, then tell John "
      "Parrent. The 'build' number at the bottom of the menu helps troubleshooting."),
     ("Have an idea to make it better?", "Tell John Parrent! The app is homegrown and always "

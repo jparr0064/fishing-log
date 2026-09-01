@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-09-01.1"
+APP_BUILD = "2026-09-01.2"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -2525,6 +2525,22 @@ def page_backup():
             type="primary",
         )
         st.caption("Grab one every month or so and keep it somewhere safe.")
+        with st.expander("📱 On a phone? Where the file goes, and what to do next"):
+            st.markdown(
+                "The download lands in **Files → Downloads** on an iPhone, or your "
+                "**Downloads** folder on Android.\n\n"
+                "**Then move it off the phone.** A backup sitting only on the phone "
+                "does not survive losing the phone — and there is no copy on our side "
+                "to fall back on.\n\n"
+                "- **iPhone:** Files → Downloads → press and hold the file → **Move** → "
+                "iCloud Drive. Or Share → Mail it to yourself.\n"
+                "- **Android:** Files → Downloads → **Share → Save to Drive**. Or email it.\n\n"
+                "Emailing it to yourself is the simplest — it is off the phone, dated, "
+                "and easy to search for later.\n\n"
+                "**If the button seems to do nothing:** you are probably in an in-app "
+                "browser (opened from Facebook, Messenger, and so on), which blocks "
+                "downloads. Open the app in Safari or Chrome instead."
+            )
     else:
         st.caption("No trips yet — nothing to back up.")
 
