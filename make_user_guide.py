@@ -57,7 +57,7 @@ def B(text):
 banner = Table(
     [[Paragraph("Fishing Log — User Guide", title_style)],
      [Paragraph("Smith Mountain Lake &nbsp;·&nbsp; A Private Fishing Log for Our Crew", subtitle_style)],
-     [Paragraph("Version 2.1 &nbsp;·&nbsp; Created by John Parrent", ParagraphStyle(
+     [Paragraph("Version 3.0 &nbsp;·&nbsp; Created by John Parrent", ParagraphStyle(
          "GuideVer", parent=subtitle_style, fontSize=9.5, spaceBefore=4))]],
     colWidths=[6.8 * inch],
 )
@@ -104,13 +104,37 @@ story.append(Paragraph(
 # ---- Log a Session ----
 story.append(Paragraph("2. Logging a trip (Log a Session)", h1))
 story.append(Paragraph(
-    "This is the page you'll use most. Fill it out right at the dock — it takes about a minute.", body))
-story.append(Paragraph("Set your spot(s) on the map", h2))
+    "This is the page you'll use most, and it works the same on a phone as on a computer. "
+    "It's in three numbered sections — <b>1 The trip</b>, <b>2 Where you fished</b>, "
+    "<b>3 What you caught</b> — and <b>one Save button at the very bottom</b> that saves all "
+    "of it together. Work down the page, hit Save once, done. It takes about a minute.", body))
+story.append(Paragraph(
+    "<b>Only two things are actually required:</b> the date and the location. Everything else "
+    "is optional. Fill in what you know and skip the rest.", tip))
+
+story.append(Paragraph("1 · The trip", h2))
+B("Date and location (location is pre-filled with Smith Mountain Lake).")
+B("Start and end time — dropdowns in 15-minute steps. Hours fished works itself out.")
+B("Weather and number of anglers (anglers is used for your DWR report).")
+B("<b>More detail</b> holds air temp, water temp and notes. Open it if you took readings; "
+  "ignore it if you didn't.")
+story.append(Paragraph("Primary fishing method used this day", h2))
+story.append(Paragraph(
+    "Pick the <b>one</b> bait and the <b>one</b> style the day was mostly about. This matters "
+    "for two reasons: every fish you log below starts out set to it, so you rarely have to "
+    "touch it again; and on a day you catch nothing it's the only record of how you fished. "
+    "Any other technique you tried can be set on the individual fish further down.", body))
+story.append(Paragraph(
+    "Using something that isn't in the list? Open <b>Add a bait or style that isn't in the "
+    "list</b> and type it. Once you log a fish with it, it stays in your list for good.", body))
+
+story.append(Paragraph("2 · Where you fished", h2))
 B("Click the map to drop your starting pin. Click again to add each spot along your troll.")
 B("The map opens centered on the water you fished <b>last trip</b> — handy if you pound the same spots.")
 B("Under the map, enter how many fish you caught at each spot (0 = none). Spots with fish "
-  "show a fish icon on the map, with an ×N badge when you caught several there.")
+  "show a fish icon on the map, with an \u00d7N badge when you caught several there.")
 B("Use the <b>Last</b> button to undo the most recent pin or <b>Clear</b> to start over.")
+B("Skipping the map is fine — the trip just won't get a pin.")
 story.append(Paragraph("Tracking your trolling route", h2))
 story.append(Paragraph(
     "This is one of the coolest features. Don't stop at one pin — click the map again at "
@@ -124,32 +148,64 @@ story.append(Paragraph(
     "<b>Good to know:</b> the big Map page shows ONE pin per trip, and it uses your FIRST pin. "
     "So make your first click the spot that best represents the trip — usually where you "
     "started — then add the rest of the route after it.", tip))
-story.append(Paragraph("Fill in the details", h2))
-B("Date, start/end time (dropdowns, 15-minute steps — hours fished computes automatically).")
-B("Weather, air and water temperature, number of anglers.")
-B("Bait/lure: pick one you've used before from the list, or type a new one.")
-B("Style: Downlines, Jigging, Light Lines, Planer Boards, Topwater, Trolling, or Umbrella Rig.")
-B("Notes: anything worth remembering — bait ball at 25 ft, birds working the point, etc.")
-story.append(Paragraph("Enter your fish", h2))
+
+story.append(Paragraph("3 · What you caught", h2))
 story.append(Paragraph(
-    "In the <b>Fish caught</b> table, pick a species, then enter length, depth, and weight. "
-    "Caught more than one? Click the blank row at the bottom of the table and it becomes a "
-    "new fish — the table grows one row at a time as you need it. Check <b>Kept?</b> for "
-    "harvested fish (leave unchecked for released). Got skunked? Just leave the table alone "
-    "— rows without a species are ignored. When you hit Save, the confirmation shows your "
-    "total fish count so you can double-check the tally.", body))
+    "There are two tables here, and you can use either or both on the same trip. Both start "
+    "with a row already set to <b>Striper</b>, since that's what most of us are after.", body))
+story.append(Paragraph("Fish you measured — one row each", h2))
+story.append(Paragraph(
+    "Pick a species, then enter length, depth and weight. Caught another? Click the blank row "
+    "at the bottom and it becomes a new fish. Check <b>Kept?</b> for harvested fish; leave it "
+    "unchecked for released.", body))
 story.append(Paragraph(
     "<b>Only the species is required</b> — a fish with just a species still counts in every "
-    "catch stat (totals, success rate, fish per hour). Length, depth, and weight are optional: "
-    "leave any of them blank with no issue. The trade-off is simple — whatever you enter feeds "
-    "your Analytics, and whatever you skip just sits out those charts. Measure your fish and "
-    "the Sizes and Personal Bests pages come alive.", body))
+    "catch stat (totals, success rate, fish per hour). Length, depth and weight are optional. "
+    "The trade-off is simple: whatever you enter feeds your Analytics, and whatever you skip "
+    "just sits out those charts. Measure your fish and the Sizes and Personal Bests pages "
+    "come alive.", body))
+story.append(Paragraph(
+    "Each row also has <b>Bait</b> and <b>Style</b>, already set to your primary method. Change "
+    "them on any fish you caught a different way — and the next row you add keeps whatever you "
+    "picked last, so a run of them is one click, not one per fish.", body))
 story.append(Paragraph(
     "The small checkbox on the far LEFT of each row is only for deleting rows: check it and a "
     "trash can appears at the top of the table. You don't need it for normal entry.", tip))
+
+story.append(Paragraph("Fish you counted but didn't measure", h2))
 story.append(Paragraph(
-    "Hit <b>Save session</b> and you're done. A confirmation appears below the form along with "
-    "the DWR report card (next section).", body))
+    "For the tail end of a good day. Twenty fish in the boat and you measured three of them? "
+    "Enter the three above, then use this for the other seventeen: how many, and the range of "
+    "sizes you saw. Set the bait and style for the group, and tick Kept if they were harvested.", body))
+story.append(Paragraph(
+    "It's recorded honestly as a range — the app never pretends those were seventeen individual "
+    "measurements. The biggest end of your range still counts for your personal best, because "
+    "\"my biggest was 32 inches\" is something you saw, not a guess.", body))
+story.append(Paragraph(
+    "Fished two ways? Use <b>Add another group</b> — one group for the spoon fish, another for "
+    "the downline fish. Each group carries its own bait and style.", body))
+story.append(Paragraph(
+    "Leave <b>How many</b> at blank or zero and the group is simply ignored.", tip))
+
+story.append(Paragraph("Got skunked?", h2))
+story.append(Paragraph(
+    "Tick <b>No fish caught (skunked trip)</b> at the top of section 3 and press Save. The "
+    "tables are ignored entirely. Skunked trips are real data — they're what makes your "
+    "success rate mean anything.", body))
+
+story.append(Paragraph("Saving", h2))
+story.append(Paragraph(
+    "As you enter fish, a running total appears — <i>\"23 fish this trip \u2014 1 measured "
+    "individually, 22 in groups\"</i>. Check it matches what's in the boat, then press "
+    "<b>Save this trip</b> at the bottom. It saves everything: the trip, the map and every "
+    "fish, in one go.", body))
+story.append(Paragraph(
+    "Saving takes a few seconds — you'll see <i>Saving your trip\u2026</i> while it works. Then "
+    "the page changes to show <b>Trip saved</b>, exactly what was recorded, and your DWR "
+    "report card if you logged stripers. Press <b>Log another trip</b> to start the next one.", body))
+story.append(Paragraph(
+    "Once a trip is saved the form is gone on purpose, so nobody accidentally saves the same "
+    "trip twice. To change it, open it under Browse &amp; Search and edit it there.", tip))
 
 # ---- DWR ----
 story.append(Paragraph("3. Filing your DWR striper report", h1))
@@ -170,10 +226,13 @@ story.append(Paragraph(
 # ---- Browse ----
 story.append(Paragraph("4. Reviewing trips (Browse &amp; Search)", h1))
 B("Filter by date range, location, or species at the top of the page.")
-B("Each trip shows as a card — click <b>View details</b> to open the full record.")
-B("The detail view shows everything: conditions, the fish table, your trolling route on a map, "
+B("Each trip shows as a card — click <b>Open trip</b> and it opens on its own page.")
+B("The trip page shows everything: conditions, the fish, your trolling route on a map, "
   "and the DWR report status.")
-B("<b>Edit this session</b> sits right at the top of the detail — expand it to fix anything.")
+B("<b>Back to all trips</b> at the top and bottom returns you to the list.")
+B("<b>Edit this trip</b> opens the same three sections you used to log it, with one "
+  "<b>Save changes</b> at the bottom. <b>Cancel editing</b> backs out without saving.")
+B("<b>Filter trips</b> at the top is collapsed until you need it — trips are newest first.")
 B("<b>Delete this session</b> is at the very bottom, on purpose — it can't be undone.")
 
 # ---- Calendar ----
@@ -241,9 +300,9 @@ faq = [
      "own log — no other member can see it. (As with any shared cloud database, John, as the "
      "administrator, can access the database when maintaining the app.)"),
     ("I got skunked. Do I still log it?", "Absolutely — skunked trips are data too, and the DWR wants "
-     "those reports just as much. Save the session with the fish table left empty."),
-    ("I made a mistake on a trip.", "Browse &amp; Search → open the trip → Edit this session (top of "
-     "the detail). Fix it and Save changes."),
+     "those reports just as much. Tick No fish caught (skunked trip) in section 3 and save."),
+    ("I made a mistake on a trip.", "Browse &amp; Search → Open trip → Edit this trip. Fix it and "
+     "press Save changes. Cancel editing backs out without changing anything."),
     ("Can I lose my data?", "It lives in a cloud database, not on your phone. For belt-and-suspenders, "
      "download a full backup ZIP now and then — if anything ever goes wrong, the Restore button "
      "puts it all back."),
