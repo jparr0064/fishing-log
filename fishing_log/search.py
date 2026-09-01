@@ -65,6 +65,13 @@ def list_sessions(
 
     where_sql = "WHERE " + " AND ".join(where)
 
+    # The top of an observed range counts as the trip's biggest fish, but only
+    # where migration 004 exists — referencing len_max unconditionally would
+    # break against a database that has not had it applied.
+    with db.read_connection() as _c:
+        _biggest = ("MAX(COALESCE(NULLIF(length, 0), len_max, 0))"
+                    if db.has_size_range_columns(_c) else "MAX(length)")
+
     query = text(f"""
         SELECT
             s.id, s.date, s.start_time, s.end_time, s.hours_fished,
@@ -72,7 +79,7 @@ def list_sessions(
             s.air_temp, s.water_temp, s.bait_lure, s.fishing_style,
             s.num_anglers, s.dwr_filed, s.notes,
             (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish,
-            (SELECT MAX(length) FROM fish WHERE session_id = s.id) AS biggest_length
+            (SELECT {_biggest} FROM fish WHERE session_id = s.id) AS biggest_length
         FROM sessions s
         {where_sql}
         ORDER BY s.date DESC, (s.start_time IS NULL), s.start_time DESC

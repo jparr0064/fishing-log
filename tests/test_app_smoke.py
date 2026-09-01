@@ -275,3 +275,51 @@ def test_demo_is_not_offered_the_clear_data_control(db_url):
     _assert_no_exception(at)
     assert not [b for b in at.sidebar.button
                 if "Delete all my data" in str(b.label)]
+
+
+def test_browse_opens_a_trip_on_its_own_page(db_url):
+    """Selecting a trip replaces the list with that trip, and offers a way back.
+
+    The detail used to redraw BELOW the grid of cards, so choosing a trip
+    looked like it did nothing unless you scrolled past every card.
+    """
+    _seed(db_url, APPROVED, trips=2)
+    at = _app(db_url, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Browse & Search").run()
+    _assert_no_exception(at)
+
+    # The list offers a way in, and does not preselect a trip.
+    assert any("Open trip" in (b.label or "") for b in at.button), \
+        "the list should offer an explicit way to open a trip"
+    assert "browse_sel" not in at.session_state, \
+        "no trip should be open until one is chosen"
+
+    # Opening one renders the detail without raising, and offers a way back.
+    at.session_state["browse_sel"] = 1
+    at.run()
+    _assert_no_exception(at)
+    assert any("Back to all trips" in (b.label or "") for b in at.button), \
+        "an opened trip must offer a way back to the list"
+
+
+def test_editing_a_trip_uses_the_same_three_sections_as_logging_one(db_url):
+    """Entering a trip and correcting one are the same task, so they must look
+    the same. They drifted into mirror-image layouts once already."""
+    _seed(db_url, APPROVED, trips=1)
+    at = _app(db_url, user=APPROVED)
+    at.run()
+
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    _assert_no_exception(at)
+    log_headings = {h.value for h in at.subheader}
+
+    at.sidebar.radio[0].set_value("Browse & Search").run()
+    at.session_state["browse_sel"] = 1
+    at.run()
+    _assert_no_exception(at)
+    edit_headings = {h.value for h in at.subheader}
+
+    for section in ("1 · The trip", "2 · Where you fished", "3 · What you caught"):
+        assert section in log_headings, f"Log a Session lost section: {section}"
+        assert section in edit_headings, f"the edit screen lost section: {section}"

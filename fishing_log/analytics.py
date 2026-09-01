@@ -339,15 +339,28 @@ def _fish_with_dates() -> pd.DataFrame:
 
 def _load_fish_with_dates() -> pd.DataFrame:
     from sqlalchemy import text
-    query = text("""
-        SELECT f.species, f.length, f.weight, s.date
-        FROM fish f JOIN sessions s ON s.id = f.session_id
-        WHERE s.user_email = :email
-    """)
     with db.read_connection() as conn:
+        # record_length is what counts for a personal best: the measured length
+        # when there is one, otherwise the TOP of an observed range. "My biggest
+        # was 32 inches" is something the angler saw, not a guess, so it can set
+        # a record (John's call, 2026-09-01).
+        #
+        # `length` stays measured-only, so averages and size distributions are
+        # still built purely from fish that met a tape.
+        if db.has_size_range_columns(conn):
+            record_expr = "COALESCE(NULLIF(f.length, 0), f.len_max, 0)"
+        else:
+            record_expr = "f.length"
+        query = text(f"""
+            SELECT f.species, f.length, f.weight, s.date,
+                   {record_expr} AS record_length
+            FROM fish f JOIN sessions s ON s.id = f.session_id
+            WHERE s.user_email = :email
+        """)
         df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["record_length"] = df["record_length"].fillna(0.0)
     return df
 
 
@@ -456,10 +469,10 @@ def personal_bests() -> pd.DataFrame:
     records = []
     for species, g in df.groupby("species"):
         rec = {"species": species}
-        gl = g[g["length"] > 0]
+        gl = g[g["record_length"] > 0]
         if not gl.empty:
-            top = gl.loc[gl["length"].idxmax()]
-            rec["longest_in"] = round(float(top["length"]), 1)
+            top = gl.loc[gl["record_length"].idxmax()]
+            rec["longest_in"] = round(float(top["record_length"]), 1)
             rec["longest_date"] = top["date"].date().isoformat()
         else:
             rec["longest_in"], rec["longest_date"] = None, None
@@ -554,8 +567,8 @@ def overall_stats() -> dict:
         }
     fish = _fish_with_dates()
     biggest = 0.0
-    if not fish.empty and float(fish["length"].max()) > 0:
-        biggest = round(float(fish["length"].max()), 1)
+    if not fish.empty and float(fish["record_length"].max()) > 0:
+        biggest = round(float(fish["record_length"].max()), 1)
     return {
         "sessions": int(len(df)),
         "total_fish": int(df["total_fish"].sum()),

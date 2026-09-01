@@ -824,8 +824,13 @@ def test_two_ranges_stay_distinct():
     assert 'plus 9 fish 28"-34" (range)' in sizes
 
 
-def test_ranged_fish_stay_out_of_size_statistics():
-    """A personal best must be a fish somebody actually measured."""
+def test_range_top_end_can_set_a_record():
+    """The top of an observed range counts as a personal best.
+
+    John's call, 2026-09-01: "my biggest was 32 inches" is something the angler
+    saw, not a guess, so it should be able to set a record. `length` still holds
+    only real measurements, which is what keeps averages measured-only.
+    """
     data_entry.add_session(
         {"date": "2026-08-16", "location_name": "SML"},
         [
@@ -836,10 +841,32 @@ def test_ranged_fish_stay_out_of_size_statistics():
     pb = analytics.personal_bests()
     row = pb[pb["species"] == "Striper"]
     assert not row.empty
-    # The ranged fish were entered as 30-40"; the only measured one was 26".
-    # The personal best must be the measured fish.
-    assert float(row.iloc[0]["longest_in"]) == 26.0, \
-        "an estimated range must never set a personal best"
+    assert float(row.iloc[0]["longest_in"]) == 40.0, \
+        "the top of the range should set the record"
+    assert analytics.overall_stats()["biggest_length"] == 40.0, \
+        "the dashboard all-time best should agree"
+
+
+def test_ranged_fish_still_excluded_from_average_sizes():
+    """Records use the range top; averages stay measured-only.
+
+    `length` holds real measurements and nothing else, so every average and
+    size distribution keeps ignoring fish that never met a tape. Only the
+    record figures consult the range.
+    """
+    data_entry.add_session(
+        {"date": "2026-08-17", "location_name": "SML"},
+        [
+            {"species": "Striper", "length": 26, "weight": 6},
+            {"species": "Striper", "count": 10, "len_min": 30, "len_max": 40},
+        ],
+    )
+    sizes = analytics.fish_sizes()
+    if not sizes.empty:
+        row = sizes[sizes["species"] == "Striper"]
+        if not row.empty and "avg_length" in row.columns:
+            assert float(row.iloc[0]["avg_length"]) == 26.0, \
+                "unmeasured fish must not drag the average length"
 
 
 @pytest.mark.parametrize("bad,msg", [
