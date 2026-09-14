@@ -26,23 +26,22 @@ jobs:
           case "$url" in
             *://*) ;;
             *)
-              echo "SUPABASE_DB_URL_PROD does not look like a connection string (no :// found)."
+              echo "SUPABASE_DB_URL_PROD has no :// in it, so it is not a connection string."
               echo "Characters stored in the secret: ${#url}"
               exit 1
               ;;
           esac
-          # Accept postgres://, postgresql://, or a driver-prefixed form such as
-          # postgresql+psycopg2://, and hand psql a plain postgresql:// URL.
           scheme=${url%%://*}
           rest=${url#*://}
-          case "$scheme" in
-            *postgres*) ;;
-            *)
-              echo "SUPABASE_DB_URL_PROD has an unexpected scheme; it should name postgres."
-              echo "Characters stored in the secret: ${#url}"
-              exit 1
-              ;;
-          esac
+          # Only ever print the scheme, and only when it is a plain scheme name.
+          # This log is public, so nothing after the :// is ever echoed.
+          if printf '%s' "$scheme" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]{0,19}$'; then
+            echo "Scheme found in SUPABASE_DB_URL_PROD: $scheme"
+          else
+            echo "SUPABASE_DB_URL_PROD does not start with a plain URL scheme."
+            echo "Characters stored in the secret: ${#url}"
+            exit 1
+          fi
           rest=$(printf '%s' "$rest" | sed 's/[[:space:]]*$//')
           rest="${rest%\"}"
           rest="${rest%\'}"
@@ -58,23 +57,22 @@ jobs:
           case "$url" in
             *://*) ;;
             *)
-              echo "SUPABASE_DB_URL_SANDBOX does not look like a connection string (no :// found)."
+              echo "SUPABASE_DB_URL_SANDBOX has no :// in it, so it is not a connection string."
               echo "Characters stored in the secret: ${#url}"
               exit 1
               ;;
           esac
-          # Accept postgres://, postgresql://, or a driver-prefixed form such as
-          # postgresql+psycopg2://, and hand psql a plain postgresql:// URL.
           scheme=${url%%://*}
           rest=${url#*://}
-          case "$scheme" in
-            *postgres*) ;;
-            *)
-              echo "SUPABASE_DB_URL_SANDBOX has an unexpected scheme; it should name postgres."
-              echo "Characters stored in the secret: ${#url}"
-              exit 1
-              ;;
-          esac
+          # Only ever print the scheme, and only when it is a plain scheme name.
+          # This log is public, so nothing after the :// is ever echoed.
+          if printf '%s' "$scheme" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]{0,19}$'; then
+            echo "Scheme found in SUPABASE_DB_URL_SANDBOX: $scheme"
+          else
+            echo "SUPABASE_DB_URL_SANDBOX does not start with a plain URL scheme."
+            echo "Characters stored in the secret: ${#url}"
+            exit 1
+          fi
           rest=$(printf '%s' "$rest" | sed 's/[[:space:]]*$//')
           rest="${rest%\"}"
           rest="${rest%\'}"
