@@ -19,23 +19,43 @@ jobs:
     steps:
       - name: Ping production database
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL_PROD }}
+          RAW_URL: ${{ secrets.SUPABASE_DB_URL_PROD }}
         run: |
-          set -euo pipefail
-          if [ -z "$DB_URL" ]; then
-            echo "SUPABASE_DB_URL_PROD is not set in repository secrets."
-            exit 1
-          fi
-          psql "$DB_URL" -v ON_ERROR_STOP=1 -At -c "select 'production alive at ' || now();"
+          set -uo pipefail
+          # Tolerate a connection string pasted with surrounding quotes,
+          # stray whitespace, or the "database_url = " prefix still attached.
+          url=$(printf '%s' "$RAW_URL" | tr -d '\r\n')
+          case "$url" in
+            *postgresql://*) url="postgresql://${url#*postgresql://}" ;;
+            *postgres://*)   url="postgres://${url#*postgres://}" ;;
+            *)
+              echo "SUPABASE_DB_URL_PROD does not contain a postgresql:// connection string."
+              echo "Characters stored in the secret: ${#url}"
+              exit 1
+              ;;
+          esac
+          url=$(printf '%s' "$url" | sed 's/[[:space:]]*$//')
+          url="${url%\"}"
+          url="${url%\'}"
+          psql "$url" -v ON_ERROR_STOP=1 -At -c "select 'production alive at ' || now();"
 
       - name: Ping sandbox database
         if: always()
         env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
+          RAW_URL: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
         run: |
-          set -euo pipefail
-          if [ -z "$DB_URL" ]; then
-            echo "SUPABASE_DB_URL_SANDBOX is not set in repository secrets."
-            exit 1
-          fi
-          psql "$DB_URL" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now();"
+          set -uo pipefail
+          url=$(printf '%s' "$RAW_URL" | tr -d '\r\n')
+          case "$url" in
+            *postgresql://*) url="postgresql://${url#*postgresql://}" ;;
+            *postgres://*)   url="postgres://${url#*postgres://}" ;;
+            *)
+              echo "SUPABASE_DB_URL_SANDBOX does not contain a postgresql:// connection string."
+              echo "Characters stored in the secret: ${#url}"
+              exit 1
+              ;;
+          esac
+          url=$(printf '%s' "$url" | sed 's/[[:space:]]*$//')
+          url="${url%\"}"
+          url="${url%\'}"
+          psql "$url" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now();"
