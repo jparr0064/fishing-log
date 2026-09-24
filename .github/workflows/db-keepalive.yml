@@ -4,6 +4,14 @@ name: Keep Supabase awake
 # activity. This runs a trivial query against both projects every day so
 # neither one ever gets close to that window.
 #
+# The psql query alone was NOT enough: it ran green every day from 2026-09-14,
+# and on 2026-09-24 Supabase still emailed that the sandbox had had no
+# "sufficient activity" for 7 days. Supabase appears to count requests through
+# its API gateway, not direct Postgres connections, so each project also gets
+# a REST API call below. Those steps need two secrets per project:
+#   SUPABASE_URL_<PROD|SANDBOX>       https://<project-ref>.supabase.co
+#   SUPABASE_ANON_KEY_<PROD|SANDBOX>  the anon (public) key, Settings > API
+#
 # IMPORTANT: this file must live on the repo's DEFAULT branch
 # (cloud-version) or GitHub will never fire the schedule.
 
@@ -77,3 +85,39 @@ jobs:
           rest="${rest%\"}"
           rest="${rest%\'}"
           psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now();"
+
+      - name: Ping production REST API
+        if: always()
+        env:
+          API_URL: ${{ secrets.SUPABASE_URL_PROD }}
+          ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_PROD }}
+        run: |
+          set -uo pipefail
+          if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL_PROD or SUPABASE_ANON_KEY_PROD is not set."
+            exit 1
+          fi
+          # The REST root answers with the schema description; any 2xx means
+          # the request went through Supabase's API gateway, which is the point.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY" \
+                   "${API_URL%/}/rest/v1/" || echo "000")
+          echo "Production REST API: HTTP $code"
+          case "$code" in 2*) ;; *) exit 1 ;; esac
+
+      - name: Ping sandbox REST API
+        if: always()
+        env:
+          API_URL: ${{ secrets.SUPABASE_URL_SANDBOX }}
+          ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_SANDBOX }}
+        run: |
+          set -uo pipefail
+          if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
+            echo "::error::SUPABASE_URL_SANDBOX or SUPABASE_ANON_KEY_SANDBOX is not set."
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY" \
+                   "${API_URL%/}/rest/v1/" || echo "000")
+          echo "Sandbox REST API: HTTP $code"
+          case "$code" in 2*) ;; *) exit 1 ;; esac
