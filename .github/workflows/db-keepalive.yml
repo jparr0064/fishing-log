@@ -106,6 +106,17 @@ jobs:
           # JWTs and are rejected when also sent as a Bearer token. The auth
           # health endpoint accepts any valid project key, while the REST root
           # (/rest/v1/) now refuses the anon key.
+          # Build the URL from the 20-character project ref, wherever it sits in
+          # what was pasted: the project URL, a postgresql:// connection string
+          # (db.<ref>.supabase.co or the pooler's postgres.<ref> user), or a
+          # dashboard link. A bare https://<ref>.supabase.co is not guaranteed.
+          ref=$(printf '%s' "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
+          if [ -z "$ref" ]; then
+            # Describe the value's shape without printing it: this log is public.
+            echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
+            exit 1
+          fi
+          API_URL="https://$ref.supabase.co"
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
@@ -135,6 +146,17 @@ jobs:
           # JWTs and are rejected when also sent as a Bearer token. The auth
           # health endpoint accepts any valid project key, while the REST root
           # (/rest/v1/) now refuses the anon key.
+          # Build the URL from the 20-character project ref, wherever it sits in
+          # what was pasted: the project URL, a postgresql:// connection string
+          # (db.<ref>.supabase.co or the pooler's postgres.<ref> user), or a
+          # dashboard link. A bare https://<ref>.supabase.co is not guaranteed.
+          ref=$(printf '%s' "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
+          if [ -z "$ref" ]; then
+            # Describe the value's shape without printing it: this log is public.
+            echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
+            exit 1
+          fi
+          API_URL="https://$ref.supabase.co"
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
