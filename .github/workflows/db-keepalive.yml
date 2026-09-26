@@ -4,13 +4,16 @@ name: Keep Supabase awake
 # activity. This runs a trivial query against both projects every day so
 # neither one ever gets close to that window.
 #
-# The psql query alone was NOT enough: it ran green every day from 2026-09-14,
-# and on 2026-09-24 Supabase still emailed that the sandbox had had no
-# "sufficient activity" for 7 days. Supabase appears to count requests through
-# its API gateway, not direct Postgres connections, so each project also gets
-# a REST API call below. Those steps need two secrets per project:
+# The psql pings ran green every day from 2026-09-14, yet on 2026-09-24
+# Supabase emailed that the sandbox had had no activity for 7 days. The cause:
+# SUPABASE_DB_URL_SANDBOX held production's connection string, so both pings
+# hit prod. The last step now fails if a DB URL secret names the wrong project.
+# Each project also gets an API-gateway ping, in case Supabase's activity
+# check doesn't count direct Postgres connections. Secrets per project:
+#   SUPABASE_DB_URL_<PROD|SANDBOX>    postgresql:// string (session/transaction
+#                                     pooler; runners have no IPv6)
 #   SUPABASE_URL_<PROD|SANDBOX>       https://<project-ref>.supabase.co
-#   SUPABASE_ANON_KEY_<PROD|SANDBOX>  the anon (public) key, Settings > API
+#   SUPABASE_ANON_KEY_<PROD|SANDBOX>  the anon / publishable key
 #
 # IMPORTANT: this file must live on the repo's DEFAULT branch
 # (cloud-version) or GitHub will never fire the schedule.
