@@ -109,7 +109,7 @@ jobs:
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
-                   "${API_URL%/}/auth/v1/health" || echo "000")
+                   "${API_URL%/}/auth/v1/health" || true)  # -w already prints 000 on failure
           echo "Production API gateway: HTTP $code"
           case "$code" in
             2*) ;;
@@ -138,7 +138,7 @@ jobs:
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
-                   "${API_URL%/}/auth/v1/health" || echo "000")
+                   "${API_URL%/}/auth/v1/health" || true)  # -w already prints 000 on failure
           echo "Sandbox API gateway: HTTP $code"
           case "$code" in
             2*) ;;
