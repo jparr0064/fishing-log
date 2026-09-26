@@ -178,3 +178,23 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Check the secrets point at the projects they're named for
+        # The sandbox psql ping passed daily while Supabase still called the
+        # sandbox idle: SUPABASE_DB_URL_SANDBOX named a different project.
+        # Compare the project refs inside each secret; print only match/no-match.
+        if: always()
+        env:
+          DB_PROD: ${{ secrets.SUPABASE_DB_URL_PROD }}
+          DB_SANDBOX: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
+          URL_PROD: ${{ secrets.SUPABASE_URL_PROD }}
+          URL_SANDBOX: ${{ secrets.SUPABASE_URL_SANDBOX }}
+        run: |
+          ref() {
+            printf '%s' "$1" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true
+          }
+          yn() { [ -n "$1" ] && echo y || echo n; }
+          same() { [ -n "$1" ] && [ "$1" = "$2" ] && echo yes || echo no; }
+          dp=$(ref "$DB_PROD"); ds=$(ref "$DB_SANDBOX"); up=$(ref "$URL_PROD"); us=$(ref "$URL_SANDBOX")
+          echo "::notice::DB_URL_SANDBOX same project as URL_SANDBOX: $(same "$ds" "$us") | DB_URL_SANDBOX same as DB_URL_PROD: $(same "$ds" "$dp") | DB_URL_PROD same as URL_PROD: $(same "$dp" "$up") | refs found (dbP dbS urlP urlS): $(yn "$dp") $(yn "$ds") $(yn "$up") $(yn "$us")"
+          [ "$(same "$ds" "$us")" = yes ] || { echo "::error::SUPABASE_DB_URL_SANDBOX does not point at the sandbox project."; exit 1; }
