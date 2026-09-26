@@ -91,7 +91,7 @@ jobs:
           rest="${rest%\'}"
           psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now();"
 
-      - name: Ping production REST API
+      - name: Ping production API gateway
         if: always()
         env:
           API_URL: ${{ secrets.SUPABASE_URL_PROD }}
@@ -102,15 +102,25 @@ jobs:
             echo "::error::SUPABASE_URL_PROD or SUPABASE_ANON_KEY_PROD is not set."
             exit 1
           fi
-          # The REST root answers with the schema description; any 2xx means
-          # the request went through Supabase's API gateway, which is the point.
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
-                   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY" \
-                   "${API_URL%/}/rest/v1/" || echo "000")
-          echo "Production REST API: HTTP $code"
-          case "$code" in 2*) ;; *) exit 1 ;; esac
+          # Only the apikey header: Supabase's newer publishable keys are not
+          # JWTs and are rejected when also sent as a Bearer token. The auth
+          # health endpoint accepts any valid project key, while the REST root
+          # (/rest/v1/) now refuses the anon key.
+          resp=$(mktemp)
+          code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" \
+                   "${API_URL%/}/auth/v1/health" || echo "000")
+          echo "Production API gateway: HTTP $code"
+          case "$code" in
+            2*) ;;
+            *)
+              # Supabase's error bodies name the problem and never echo the key.
+              echo "::error::Production API ping got HTTP $code: $(head -c 200 "$resp" | tr -d '\r\n')"
+              exit 1
+              ;;
+          esac
 
-      - name: Ping sandbox REST API
+      - name: Ping sandbox API gateway
         if: always()
         env:
           API_URL: ${{ secrets.SUPABASE_URL_SANDBOX }}
@@ -121,8 +131,20 @@ jobs:
             echo "::error::SUPABASE_URL_SANDBOX or SUPABASE_ANON_KEY_SANDBOX is not set."
             exit 1
           fi
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 \
-                   -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY" \
-                   "${API_URL%/}/rest/v1/" || echo "000")
-          echo "Sandbox REST API: HTTP $code"
-          case "$code" in 2*) ;; *) exit 1 ;; esac
+          # Only the apikey header: Supabase's newer publishable keys are not
+          # JWTs and are rejected when also sent as a Bearer token. The auth
+          # health endpoint accepts any valid project key, while the REST root
+          # (/rest/v1/) now refuses the anon key.
+          resp=$(mktemp)
+          code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" \
+                   "${API_URL%/}/auth/v1/health" || echo "000")
+          echo "Sandbox API gateway: HTTP $code"
+          case "$code" in
+            2*) ;;
+            *)
+              # Supabase's error bodies name the problem and never echo the key.
+              echo "::error::Sandbox API ping got HTTP $code: $(head -c 200 "$resp" | tr -d '\r\n')"
+              exit 1
+              ;;
+          esac
