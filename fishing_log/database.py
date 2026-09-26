@@ -73,6 +73,22 @@ def bump_cache_version() -> None:
 
 _engine: Optional[Engine] = None
 
+# The only Postgres driver installed is psycopg2 (see requirements.txt). A URL
+# naming any other driver makes SQLAlchemy import a module that isn't there.
+# By 2026-09-26 the Cloud secret held a ``postgresql+psycopg://`` string (the
+# form Supabase's dashboard offers) and the whole site went down with
+# ModuleNotFoundError: psycopg. Pin the driver here instead of trusting
+# whoever last pasted the secret.
+_POSTGRES_SCHEMES = ("postgresql+psycopg2", "postgresql+psycopg", "postgresql", "postgres")
+
+
+def _psycopg2_url(url: str) -> str:
+    url = url.strip().strip("'\"")
+    scheme, sep, rest = url.partition("://")
+    if sep and scheme.lower() in _POSTGRES_SCHEMES:
+        return "postgresql+psycopg2://" + rest
+    return url
+
 
 def get_engine() -> Engine:
     global _engine
@@ -83,7 +99,7 @@ def get_engine() -> Engine:
                 "DATABASE_URL not configured. "
                 "Add it to .streamlit/secrets.toml as database_url = '...'"
             )
-        _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+        _engine = create_engine(_psycopg2_url(url), pool_pre_ping=True, pool_size=5, max_overflow=10)
     return _engine
 
 

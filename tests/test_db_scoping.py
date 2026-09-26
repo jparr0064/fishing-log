@@ -157,3 +157,20 @@ def test_write_transaction_applies_scope(monkeypatch, as_user):
     with db.write_transaction() as conn:
         assert conn == "conn"
     assert seen == ["conn"], "write_transaction must scope before yielding"
+
+
+@pytest.mark.parametrize("scheme", [
+    "postgresql+psycopg2", "postgresql+psycopg", "postgresql", "postgres", "POSTGRESQL+PSYCOPG",
+])
+def test_postgres_url_always_uses_installed_psycopg2_driver(scheme):
+    # A pasted postgresql+psycopg:// secret took the site down on 2026-09-26.
+    url = f"{scheme}://u:p@db.example.supabase.co:5432/postgres"
+    assert db._psycopg2_url(url) == "postgresql+psycopg2://u:p@db.example.supabase.co:5432/postgres"
+
+
+def test_postgres_url_tolerates_quotes_and_whitespace():
+    assert db._psycopg2_url(' "postgresql://u:p@h/db"\n') == "postgresql+psycopg2://u:p@h/db"
+
+
+def test_non_postgres_url_is_left_alone():
+    assert db._psycopg2_url("sqlite:///:memory:") == "sqlite:///:memory:"
