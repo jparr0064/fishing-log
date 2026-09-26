@@ -13,13 +13,13 @@ streamlit==1.60.0
 # current versions, so the caps are gone — reinstating them would now pin the
 # app to builds *older* than what streamlit itself expects.
 Pillow>=9.0
-pandas>=2.0
+pandas>=3.0.6
 folium>=0.16
-streamlit-folium>=0.20
+streamlit-folium>=0.27.4
 streamlit-geolocation>=0.0.10
-sqlalchemy>=2.0
-psycopg2-binary>=2.9
-altair>=5.0
+sqlalchemy>=2.0.54
+psycopg2-binary>=2.9.13
+altair>=6.3.0
 
 # Authlib was pinned to 1.6.5 to dodge streamlit/streamlit#13461 ("400:
 # 'NoneType' object does not support item assignment" on /oauth2callback).
