@@ -124,10 +124,12 @@ jobs:
           n=0
           for ref in $refs; do
             n=$((n + 1))
+            # GitHub runs this under bash -e, so catch curl's failure here or a
+            # dead first candidate ends the step before the next one is tried.
+            rc=0
             code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                      -H "apikey: $ANON_KEY" \
-                     "https://$ref.supabase.co/auth/v1/health")  # -w prints 000 on failure
-            rc=$?
+                     "https://$ref.supabase.co/auth/v1/health") || rc=$?  # -w prints 000 on failure
             echo "Production API gateway, candidate $n: HTTP $code"
             case "$code" in 2*) exit 0 ;; esac
           done
@@ -168,10 +170,12 @@ jobs:
           n=0
           for ref in $refs; do
             n=$((n + 1))
+            # GitHub runs this under bash -e, so catch curl's failure here or a
+            # dead first candidate ends the step before the next one is tried.
+            rc=0
             code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                      -H "apikey: $ANON_KEY" \
-                     "https://$ref.supabase.co/auth/v1/health")  # -w prints 000 on failure
-            rc=$?
+                     "https://$ref.supabase.co/auth/v1/health") || rc=$?  # -w prints 000 on failure
             echo "Sandbox API gateway, candidate $n: HTTP $code"
             case "$code" in 2*) exit 0 ;; esac
           done
