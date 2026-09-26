@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-09-01.2"
+APP_BUILD = "2026-09-26.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -771,6 +771,67 @@ def _append_spot(spots: list, lat, lon) -> bool:
     return False
 
 
+WHERE_MAP = "📍 Drop pins on a map"
+WHERE_NOTES = "📝 Describe it in notes"
+
+
+def _where_fished(key: str, state_key: str, map_key: str, defer_rerun: bool = False,
+                  existing_spots: bool = False, existing_notes: str | None = None):
+    """Section 2: record where you fished as map pins, as notes, or not at all.
+
+    Returns (mode, location_notes) with mode "map", "notes" or None.
+
+    Some anglers want the map exactly as it was; others would rather just write
+    it down. Nothing opens until one is picked, so nobody is shown a map they
+    don't want. The map option also gets an optional notes box underneath. An
+    existing trip reopens on whichever it used.
+
+    The notes text is mirrored into its own session key (``{key}_keep``) and
+    fed back as the box's value. The map calls st.rerun() while it adjusts
+    itself, which can end a run before this box is drawn; the mirror means a
+    typed note survives that, and also carries over if the angler switches
+    between the two options.
+
+    Before migrations/006 there is nowhere to store the notes, so the section
+    falls back to the map alone, exactly as it was.
+    """
+    if not db.has_location_notes_column():
+        st.caption("Drop a pin for each spot, or skip it — a trip saves fine without one.")
+        _spots_picker(state_key, map_key, defer_rerun=defer_rerun)
+        return "map", None
+
+    keep_key = f"{key}_keep"
+    st.session_state.setdefault(keep_key, existing_notes or "")
+    default = 0 if existing_spots else (1 if existing_notes else None)
+    st.caption("Pick one, or skip it — a trip saves fine without either.")
+    choice = st.radio("How do you want to record where you fished?",
+                      [WHERE_MAP, WHERE_NOTES], index=default, horizontal=True,
+                      key=f"{key}_mode", label_visibility="collapsed")
+
+    if choice == WHERE_MAP:
+        _spots_picker(state_key, map_key, defer_rerun=defer_rerun)
+        notes = st.text_area(
+            "Notes about where you fished (optional)",
+            value=st.session_state[keep_key], height=80, key=f"{key}_notes_map",
+            placeholder="e.g. worked the channel edge from the bridge to the point")
+        st.session_state[keep_key] = notes
+        return "map", notes
+    if choice == WHERE_NOTES:
+        notes = st.text_area(
+            "Describe where you fished",
+            value=st.session_state[keep_key], height=110, key=f"{key}_notes_only",
+            placeholder="e.g. north side of the Hales Ford bridge, 25 to 35 ft of water")
+        st.session_state[keep_key] = notes
+        return "notes", notes
+    return None, None
+
+
+def _clear_where_state(key: str) -> None:
+    """Forget section 2's choice and notes (after a save or cancel)."""
+    for suffix in ("_keep", "_mode", "_notes_map", "_notes_only"):
+        st.session_state.pop(f"{key}{suffix}", None)
+
+
 def _clear_spot_state(state_key: str, map_key: str):
     """Drop a picker's spot list and its per-spot checkbox widget state."""
     n = len(st.session_state.get(state_key, []))
@@ -907,11 +968,14 @@ def _blank_fish_df(rows: int = 1) -> pd.DataFrame:
     # infer them from: pandas defaults every column to float64, and
     # st.data_editor then refuses a checkbox on a float ("column type
     # `checkbox` ... is not compatible with `float`").
+    # Length and weight start EMPTY (not 0.0) so the starter row reads as a
+    # greyed-out placeholder, and so _is_untouched_starter() can tell it apart
+    # from a fish the angler actually filled in.
     return pd.DataFrame({
         "species": pd.Series([DEFAULT_SPECIES] * rows, dtype="object"),
-        "length": pd.Series([0.0] * rows, dtype="float64"),
+        "length": pd.Series([None] * rows, dtype="float64"),
         "depth": pd.Series([None] * rows, dtype="float64"),
-        "weight": pd.Series([0.0] * rows, dtype="float64"),
+        "weight": pd.Series([None] * rows, dtype="float64"),
         "kept": pd.Series([False] * rows, dtype="bool"),
         # Per-fish method. Blank means "caught the way the trip was", which is
         # what a single-technique day leaves them as — no extra clicks.
@@ -943,7 +1007,8 @@ SAME_AS_TRIP = "— same as trip —"
 
 def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
                  trip_bait: str | None = None, trip_style: str | None = None,
-                 extra_baits: list | None = None, extra_styles: list | None = None):
+                 extra_baits: list | None = None, extra_styles: list | None = None,
+                 skip_starter: bool = False):
     """A data editor with one row per fish: species, length, depth, weight, kept.
 
     Must be rendered OUTSIDE any st.form — inside a form the browser holds all
@@ -1060,21 +1125,48 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
         if not defer_rerun:
             st.rerun()
 
-    n = len(_fish_from_editor(edited))
+    n = len(_fish_from_editor(edited, skip_starter=skip_starter))
     if n:
         extra = " (blank rows aren't counted)" if len(edited) > n else ""
         st.caption(f"🎣 **Fish entered: {n}**{extra}")
+    elif skip_starter:
+        st.caption("🎣 **Fish entered: 0** — the starter row doesn't count until "
+                   "you give it a length, weight, depth or tick Kept.")
     else:
         st.caption("🎣 **Fish entered: 0** — leave the table blank for a skunked trip.")
     return edited
 
 
-def _fish_from_editor(edited: pd.DataFrame) -> list:
-    """Extract {species, length, depth, weight, kept} dicts, skipping blank rows."""
+def _is_untouched_starter(r) -> bool:
+    """True for a row that still looks exactly like the pre-filled starter row.
+
+    The measured-fish table opens with one Striper row so the bait/style
+    defaults are visible and a normal trip is one less click. But a row the
+    angler never filled in is not a fish: counting it logged a fish nobody
+    caught whenever someone used only the "counted but didn't measure" groups.
+    Species alone is not enough to count here, because the default species is
+    already set. Any length, weight, depth or a ticked Kept makes it real.
+    """
+    def _num(col):
+        v = r.get(col)
+        return float(v) if v is not None and pd.notna(v) else 0.0
+    return (str(r.get("species") or "").strip() == DEFAULT_SPECIES
+            and _num("length") <= 0 and _num("weight") <= 0 and _num("depth") <= 0
+            and not (pd.notna(r.get("kept")) and bool(r.get("kept"))))
+
+
+def _fish_from_editor(edited: pd.DataFrame, skip_starter: bool = False) -> list:
+    """Extract {species, length, depth, weight, kept} dicts, skipping blank rows.
+
+    skip_starter=True (tables that opened on the blank starter row) also skips
+    rows the angler never filled in; see _is_untouched_starter.
+    """
     out = []
     for _, r in edited.iterrows():
         sp = r["species"]
         if pd.isna(sp) or not str(sp).strip():
+            continue
+        if skip_starter and _is_untouched_starter(r):
             continue
         length = float(r["length"]) if pd.notna(r.get("length")) else 0.0
         weight = float(r["weight"]) if pd.notna(r.get("weight")) else 0.0
@@ -1423,8 +1515,8 @@ def page_log_session():
         st.divider()
         save = st.button("💾  Save this trip", type="primary",
                          use_container_width=True, key="log_save")
-        st.caption("Saves everything above — the trip, the map, and every fish. "
-                   "If you logged stripers, a DWR report option appears next.")
+        st.caption("Saves everything above — the trip, where you fished, and every "
+                   "fish. If you logged stripers, a DWR report option appears next.")
 
     # Smart defaults: pre-fill from the most recent session and known baits.
     defaults = search.recent_defaults()
@@ -1508,8 +1600,8 @@ def page_log_session():
     # ---------------- 2. Where you fished ------------------------------
     with sec_where:
         st.subheader("2 · Where you fished")
-        st.caption("Drop a pin for each spot, or skip it — a trip saves fine without one.")
-        _spots_picker("spots", "loc_picker", defer_rerun=save)
+        where_mode, location_notes = _where_fished(
+            "log_where", "spots", "loc_picker", defer_rerun=save)
 
     # ---------------- 3. What you caught -------------------------------
     with sec_catch:
@@ -1532,13 +1624,14 @@ def page_log_session():
 
         st.markdown("**Fish you measured** — one row each")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
-                                    defer_rerun=save,
+                                    defer_rerun=save, skip_starter=True,
                                     trip_bait=trip_bait, trip_style=trip_style,
                                     extra_baits=x_baits, extra_styles=x_styles)
 
         st.markdown("**Fish you counted but didn't measure**")
-        st.caption("How many, and the size range you saw. Recorded as a range — "
-                   "never turned into individual lengths.")
+        st.caption("How many, and the sizes you saw. Smallest and largest are "
+                   "both optional; fill in either one or both. Recorded as a "
+                   "range, never turned into individual lengths.")
         bulk_groups = _bulk_fish_section("catch_editor",
                                          trip_bait=trip_bait, trip_style=trip_style,
                                          extra_baits=x_baits, extra_styles=x_styles)
@@ -1546,7 +1639,7 @@ def page_log_session():
         # One count covering both tables. The fish table prints its own
         # "Fish entered: N" and the groups printed nothing, so a 22-fish group
         # looked like it had not registered at all.
-        _measured = len(_fish_from_editor(catch_editor))
+        _measured = len(_fish_from_editor(catch_editor, skip_starter=True))
         _grouped = sum(int(g["count"]) for g in bulk_groups)
         if skunked:
             st.info("**Skunked trip** — the tables above are being ignored.")
@@ -1559,22 +1652,27 @@ def page_log_session():
             st.caption("No fish entered yet. Save as-is to log a skunked trip, "
                        "or tick the box above to be explicit about it.")
 
-        _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
+        _dwr_size_preview(_fish_from_editor(catch_editor, skip_starter=True) + bulk_groups)
 
     # ---------------- save ---------------------------------------------
     if save:
         # A skunked trip records no fish no matter what the tables hold.
-        fish = [] if skunked else (_fish_from_editor(catch_editor) + bulk_groups)
+        fish = [] if skunked else (
+            _fish_from_editor(catch_editor, skip_starter=True) + bulk_groups)
         # No coordinate fallback: a trip with no pin saves with no coordinates
         # rather than inventing one at the lake default, which fabricated a
         # location and distorted the Map page.
-        spots = list(st.session_state.get("spots", []))
+        # Pins only count when the map is the option picked: pins dropped and
+        # then abandoned for "describe it in notes" must not save.
+        spots = (list(st.session_state.get("spots", []))
+                 if where_mode == "map" else [])
         session = {
             "date": d, "start_time": start_time, "end_time": end_time,
             "location_name": location_name, "weather": weather,
             "air_temp": air_temp, "water_temp": water_temp,
             "bait_lure": bait_choice, "fishing_style": fishing_style,
             "num_anglers": num_anglers, "notes": notes,
+            "location_notes": location_notes,
         }
         try:
             # The page takes a few seconds to save, most of it spent redrawing
@@ -1584,6 +1682,7 @@ def page_log_session():
                 new_id = data_entry.add_session(session, fish, spots)
             _refresh()
             _clear_spot_state("spots", "loc_picker")
+            _clear_where_state("log_where")
             st.session_state["pending_dwr_sid"] = new_id
             n = len(fish)
             if n:
@@ -1791,6 +1890,7 @@ def _render_session_detail(detail: dict, sid: int):
         if st.button("←  Cancel editing", key=f"cancel_edit_{sid}"):
             st.session_state.pop(edit_key, None)
             _clear_spot_state(f"edit_spots_{sid}", f"edit_map_{sid}")
+            _clear_where_state(f"e_where_{sid}")
             _reset_fish_editor(f"e_fish_{sid}")
             st.rerun()
 
@@ -1929,6 +2029,13 @@ def _render_session_detail(detail: dict, sid: int):
         st_folium(map_view.build_route_map(route_pts), height=320,
                   use_container_width=True, returned_objects=[], key=f"route_{sid}")
 
+    # Where-you-fished notes: under the map when there is one, on their own
+    # when the trip was described in words. Nothing at all when neither.
+    if detail.get("location_notes"):
+        if not detail_spots:
+            st.markdown("**📍 Where you fished**")
+        st.info(_plain(detail["location_notes"]))
+
     if not _is_demo():
         # Two-step delete: the first click only arms a confirmation row —
         # deleting a trip is irreversible, so it must never be one click.
@@ -2001,6 +2108,9 @@ def _edit_form(detail: dict):
         list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())))
     existing_bait = detail.get("bait_lure") or ""
     existing_style = detail.get("fishing_style") or ""
+    # A trip with no fish opens on the blank starter row, which must not turn
+    # into a fish on save (same rule as a new trip).
+    edit_starter = not detail["fish"]
     existing = (
         pd.DataFrame(detail["fish"]) if detail["fish"] else _blank_fish_df(1)
     )
@@ -2075,13 +2185,20 @@ def _edit_form(detail: dict):
     # ---------------- 2. Where you fished ------------------------------
     with sec_where:
         st.subheader("2 · Where you fished")
-        _spots_picker(f"edit_spots_{sid}", f"edit_map_{sid}", defer_rerun=saved)
+        where_mode_e, location_notes_e = _where_fished(
+            f"e_where_{sid}", f"edit_spots_{sid}", f"edit_map_{sid}",
+            # An older trip can have a starting coordinate with no spot rows;
+            # it still opens on the map so saving it keeps that coordinate.
+            defer_rerun=saved,
+            existing_spots=bool(detail.get("spots")) or detail.get("latitude") is not None,
+            existing_notes=detail.get("location_notes"))
 
     # ---------------- 3. What you caught -------------------------------
     with sec_catch:
         st.subheader("3 · What you caught")
         st.markdown("**Fish you measured** — one row each")
         catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved,
+                                    skip_starter=edit_starter,
                                     trip_bait=trip_bait_e, trip_style=trip_style_e,
                                     extra_baits=x_baits_e, extra_styles=x_styles_e)
 
@@ -2090,7 +2207,7 @@ def _edit_form(detail: dict):
                                          trip_bait=trip_bait_e, trip_style=trip_style_e,
                                          extra_baits=x_baits_e, extra_styles=x_styles_e)
 
-        _measured = len(_fish_from_editor(catch_editor))
+        _measured = len(_fish_from_editor(catch_editor, skip_starter=edit_starter))
         _grouped = sum(int(g["count"]) for g in bulk_groups)
         if _measured or _grouped:
             st.success(
@@ -2100,12 +2217,15 @@ def _edit_form(detail: dict):
         else:
             st.caption("No fish on this trip.")
 
-        _dwr_size_preview(_fish_from_editor(catch_editor) + bulk_groups)
+        _dwr_size_preview(_fish_from_editor(catch_editor, skip_starter=edit_starter)
+                          + bulk_groups)
 
     if saved:
-        fish = _fish_from_editor(catch_editor) + bulk_groups
-        spots = list(st.session_state.get(f"edit_spots_{sid}", []))
+        fish = _fish_from_editor(catch_editor, skip_starter=edit_starter) + bulk_groups
+        spots = (list(st.session_state.get(f"edit_spots_{sid}", []))
+                 if where_mode_e == "map" else [])
         session = {
+            "location_notes": location_notes_e,
             "date": d, "start_time": start_time, "end_time": end_time,
             "location_name": location_name,
             "weather": weather, "air_temp": air_temp, "water_temp": water_temp,
@@ -2118,10 +2238,15 @@ def _edit_form(detail: dict):
         }
         try:
             with st.spinner("Saving your changes…"):
-                data_entry.update_session(sid, session, fish, spots)
+                # Switching a mapped trip to notes (or to neither) is a
+                # deliberate choice to drop its location, so its starting
+                # coordinate goes too, or the Map page would keep plotting it.
+                data_entry.update_session(sid, session, fish, spots,
+                                          clear_coords=where_mode_e == "notes")
             _refresh()
             # Reset edit state so the expander collapses and reloads fresh.
             _clear_spot_state(f"edit_spots_{sid}", f"edit_map_{sid}")
+            _clear_where_state(f"e_where_{sid}")
             _reset_fish_editor(f"e_fish_{sid}")
             _reset_bulk_groups(f"e_fish_{sid}")
             st.session_state.pop(f"editing_{sid}", None)   # back to reading it

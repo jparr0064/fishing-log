@@ -47,6 +47,10 @@ def _sizes(rows) -> str:
 
         31", 28", 24", plus 17 fish 23"-30" (range)
 
+    Only one end of the range may be known. Then the clause says so in words,
+    'plus 21 fish up to 37" (range)' or 'plus 21 fish 20" and up (range)', so a
+    lone bound can never read as every fish being that size.
+
     A range is NEVER expanded into per-fish lengths. It went in as one angler's
     estimate of a span and it comes out saying exactly that, so the biologist
     reading the form can tell measured data from eyeballed data. The angler
@@ -63,10 +67,17 @@ def _sizes(rows) -> str:
         if f.get("length"):
             continue
         lo, hi = f.get("len_min"), f.get("len_max")
-        if lo and hi:
-            buckets[(_fmt_num(lo), _fmt_num(hi))] = buckets.get((_fmt_num(lo), _fmt_num(hi)), 0) + 1
+        if lo or hi:
+            k = (_fmt_num(lo) if lo else "", _fmt_num(hi) if hi else "")
+            buckets[k] = buckets.get(k, 0) + 1
     for (lo, hi), n in buckets.items():
-        parts.append(f"plus {n} fish {lo}{UNIT}-{hi}{UNIT} (range)")
+        if lo and hi:
+            span = f"{lo}{UNIT}-{hi}{UNIT}"
+        elif hi:
+            span = f"up to {hi}{UNIT}"
+        else:
+            span = f"{lo}{UNIT} and up"
+        parts.append(f"plus {n} fish {span} (range)")
 
     return ", ".join(parts)
 
@@ -113,7 +124,7 @@ def range_notice(session: dict):
         if (f.get("species") or "").strip().lower() == SPECIES.lower()
     ]
     ranged = [f for f in stripers
-              if not f.get("length") and f.get("len_min") and f.get("len_max")]
+              if not f.get("length") and (f.get("len_min") or f.get("len_max"))]
     if not ranged:
         return None
     summary = summarize(session)

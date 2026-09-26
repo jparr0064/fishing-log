@@ -224,6 +224,41 @@ def has_trip_uuid_column() -> bool:
     return _trip_uuid_support[key]
 
 
+# Optional `sessions` columns from later migrations. Same idea as trip_uuid
+# above: the app has to keep working on a database where the migration has not
+# been applied yet (production is migrated by hand, AFTER the sandbox).
+#   location_notes   migrations/006 - "where you fished" written as notes,
+#                    alongside or instead of map pins
+_OPTIONAL_SESSION_COLUMNS = ("location_notes",)
+_session_columns_cache: dict = {}
+
+
+def session_optional_columns() -> set:
+    """Which optional `sessions` columns this database actually has."""
+    engine = get_engine()
+    key = id(engine)
+    if key not in _session_columns_cache:
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            present = {c["name"] for c in sa_inspect(engine).get_columns("sessions")}
+            _session_columns_cache[key] = {
+                c for c in _OPTIONAL_SESSION_COLUMNS if c in present}
+        except Exception:
+            _session_columns_cache[key] = set()
+    return _session_columns_cache[key]
+
+
+def has_location_notes_column() -> bool:
+    """True when sessions.location_notes is present (migrations/006)."""
+    return "location_notes" in session_optional_columns()
+
+
+def session_fields() -> tuple:
+    """SESSION_FIELDS plus whichever optional columns this database has."""
+    return SESSION_FIELDS + tuple(
+        c for c in _OPTIONAL_SESSION_COLUMNS if c in session_optional_columns())
+
+
 def insert_session_tx(conn, session: dict, trip_uuid: Optional[str] = None) -> int:
     """Insert one session on an existing transaction; return its new id.
 
@@ -232,9 +267,9 @@ def insert_session_tx(conn, session: dict, trip_uuid: Optional[str] = None) -> i
     restoring twice does not duplicate it. Skipped entirely when the column is
     absent, so this works before migration 003 has been applied.
     """
-    fields = ("user_email",) + SESSION_FIELDS
+    fields = ("user_email",) + session_fields()
     params: dict = {"user_email": get_current_user()}
-    params.update({f: session.get(f) for f in SESSION_FIELDS})
+    params.update({f: session.get(f) for f in session_fields()})
 
     if has_trip_uuid_column():
         fields = fields + ("trip_uuid",)

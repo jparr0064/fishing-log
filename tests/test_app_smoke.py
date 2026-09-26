@@ -83,8 +83,28 @@ def db_url(tmp_path, monkeypatch):
     from fishing_log import database as db
     db._engine = None
     db._trip_uuid_support.clear()
+    db._session_columns_cache.clear()
     yield url
     db._engine = None
+    db._session_columns_cache.clear()
+
+
+@pytest.fixture
+def db_url_notes(db_url):
+    """The same throwaway database with migrations/006 (location_notes) applied."""
+    from sqlalchemy import create_engine, text
+    from fishing_log import database as db
+    engine = create_engine(db_url)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN location_notes TEXT"))
+        for col, typ in (("len_min", "REAL"), ("len_max", "REAL"),
+                         ("bait_lure", "TEXT"), ("fishing_style", "TEXT")):
+            conn.execute(text(f"ALTER TABLE fish ADD COLUMN {col} {typ}"))
+    engine.dispose()
+    db._session_columns_cache.clear()
+    db._fish_columns_cache.clear()
+    yield db_url
+    db._fish_columns_cache.clear()
 
 
 def _seed(url, email, trips=2):
@@ -328,3 +348,93 @@ def test_editing_a_trip_uses_the_same_three_sections_as_logging_one(db_url):
     for section in ("1 · The trip", "2 · Where you fished", "3 · What you caught"):
         assert section in log_headings, f"Log a Session lost section: {section}"
         assert section in edit_headings, f"the edit screen lost section: {section}"
+
+
+# ---- 2026-09-26: starter row, one-ended range, map-or-notes ---------------
+
+def _rows(url, sql):
+    from sqlalchemy import create_engine, text
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        out = [dict(r) for r in conn.execute(text(sql)).mappings()]
+    engine.dispose()
+    return out
+
+
+def test_where_you_fished_opens_on_a_choice_not_a_map(db_url_notes):
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    _assert_no_exception(at)
+    where = at.radio(key="log_where_mode")
+    assert where.value is None, "nothing should be picked until the angler picks"
+    assert "Set your spot(s)" not in _text(at), "no map until the map is chosen"
+
+    where.set_value("📝 Describe it in notes").run()
+    _assert_no_exception(at)
+    assert at.text_area(key="log_where_notes_only") is not None
+    assert "Set your spot(s)" not in _text(at)
+
+    at.radio(key="log_where_mode").set_value("📍 Drop pins on a map").run()
+    _assert_no_exception(at)
+    assert "Set your spot(s)" in _text(at)
+    assert at.text_area(key="log_where_notes_map") is not None, \
+        "the map option carries an optional notes box underneath"
+
+
+def test_counted_fish_only_saves_no_phantom_and_one_ended_range(db_url_notes):
+    """The screenshot bug: 21 counted stripers, largest 37", nothing measured.
+
+    It used to save 22 fish (the untouched starter row counted as a fish) or
+    refuse to save at all ("give both ends of the size range").
+    """
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    at.number_input(key="catch_editor_g0_n").set_value(21)
+    at.number_input(key="catch_editor_g0_hi").set_value(37.0)
+    at.radio(key="log_where_mode").set_value("📝 Describe it in notes").run()
+    at.text_area(key="log_where_notes_only").set_value("Hales Ford bridge, 30 ft").run()
+    _assert_no_exception(at)
+    assert "21 fish this trip" in _text(at), _text(at)
+
+    at.button(key="log_save").click().run()
+    _assert_no_exception(at)
+    assert not at.error, "; ".join(str(e.value) for e in at.error)
+
+    sessions = _rows(db_url_notes, "SELECT * FROM sessions")
+    assert len(sessions) == 1
+    assert sessions[0]["location_notes"] == "Hales Ford bridge, 30 ft"
+    assert sessions[0]["latitude"] is None
+    fish = _rows(db_url_notes, "SELECT * FROM fish")
+    assert len(fish) == 21, "the untouched starter row must not become a fish"
+    assert all(f["len_max"] == 37 and f["len_min"] is None for f in fish)
+    assert all(not f["length"] for f in fish), "a range end is never a length"
+    assert not _rows(db_url_notes, "SELECT * FROM spots")
+
+
+def test_trip_described_in_notes_shows_notes_not_a_blank_map(db_url_notes):
+    from sqlalchemy import create_engine, text
+    engine = create_engine(db_url_notes)
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO sessions (user_email, date, location_name, num_anglers, "
+            "hours_fished, location_notes) VALUES (:e, '2026-09-20', 'SML', 1, 3, "
+            "'Off the point at Crazy Horse')"), {"e": APPROVED})
+    engine.dispose()
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Browse & Search").run()
+    at.session_state["browse_sel"] = 1
+    at.run()
+    _assert_no_exception(at)
+    text_ = _text(at)
+    assert "Crazy Horse" in text_
+    assert "Trolling route" not in text_, "no map for a trip with no pins"
+
+    at.session_state["editing_1"] = True
+    at.run()
+    _assert_no_exception(at)
+    assert at.radio(key="e_where_1_mode").value == "📝 Describe it in notes", \
+        "editing reopens on the option the trip used"
+    assert "Set your spot(s)" not in _text(at)

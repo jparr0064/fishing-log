@@ -22,7 +22,9 @@ CREATE TABLE sessions (
     bait_lure TEXT, fishing_style TEXT,
     num_anglers INTEGER DEFAULT 1, dwr_filed INTEGER DEFAULT 0,
     dwr_filed_at TEXT,
-    notes TEXT, moon_phase TEXT
+    notes TEXT, moon_phase TEXT,
+    -- migrations/006: "where you fished" written as notes.
+    location_notes TEXT
 );
 CREATE TABLE fish (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -824,6 +826,62 @@ def test_two_ranges_stay_distinct():
     assert 'plus 9 fish 28"-34" (range)' in sizes
 
 
+@pytest.mark.parametrize("group,expected", [
+    ({"len_max": 37}, 'plus 21 fish up to 37" (range)'),
+    ({"len_min": 20}, 'plus 21 fish 20" and up (range)'),
+    ({"len_min": 20, "len_max": 37}, 'plus 21 fish 20"-37" (range)'),
+])
+def test_one_end_of_the_range_is_enough(group, expected):
+    """Either end alone saves, and the DWR text says which end it is.
+
+    John's call, 2026-09-26: the angler should not be blocked for knowing only
+    the biggest (or smallest) fish. The wording is what keeps it honest: it
+    must never read as 21 fish that were each 37 inches.
+    """
+    from fishing_log import dwr_report
+    fish = data_entry.validate_fish([{"species": "Striper", "count": 21, **group}])
+    assert len(fish) == 21
+    assert all(f["length"] == 0.0 for f in fish), "a bound is never a length"
+    sizes = dwr_report.summarize({"date": "x", "fish": fish})["released_sizes"]
+    assert sizes == expected
+    assert dwr_report.range_notice({"fish": fish}) is not None
+
+
+def test_location_notes_save_and_blank_is_none():
+    sid = data_entry.add_session(
+        {"date": "2026-09-20", "location_name": "SML",
+         "location_notes": "  Hales Ford bridge, 30 ft  "}, [])
+    assert search.get_session(sid)["location_notes"] == "Hales Ford bridge, 30 ft"
+    sid2 = data_entry.add_session(
+        {"date": "2026-09-21", "location_name": "SML", "location_notes": "   "}, [])
+    assert search.get_session(sid2)["location_notes"] is None, \
+        "blank notes are stored as NULL so the trip view shows nothing"
+
+
+def test_switching_a_mapped_trip_to_notes_drops_its_location():
+    sid = data_entry.add_session(
+        {"date": "2026-09-22", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.6}])
+    assert search.get_session(sid)["latitude"] == 37.1
+    data_entry.update_session(
+        sid, {"date": "2026-09-22", "location_name": "SML",
+              "location_notes": "off the point"}, [], [], clear_coords=True)
+    trip = search.get_session(sid)
+    assert trip["spots"] == []
+    assert trip["latitude"] is None and trip["longitude"] is None
+    assert trip["location_notes"] == "off the point"
+
+
+def test_editing_without_clear_coords_still_keeps_an_old_coordinate():
+    """The older guard stands: an empty picker alone never wipes coordinates."""
+    sid = data_entry.add_session(
+        {"date": "2026-09-23", "location_name": "SML",
+         "latitude": 37.2, "longitude": -79.7}, [])
+    data_entry.update_session(
+        sid, {"date": "2026-09-23", "location_name": "SML"}, [], [])
+    assert search.get_session(sid)["latitude"] == 37.2
+
+
 def test_range_top_end_can_set_a_record():
     """The top of an observed range counts as a personal best.
 
@@ -871,7 +929,8 @@ def test_ranged_fish_still_excluded_from_average_sizes():
 
 @pytest.mark.parametrize("bad,msg", [
     ({"species": "Striper", "count": 5, "len_min": 30, "len_max": 20}, "backwards"),
-    ({"species": "Striper", "count": 5, "len_min": 23}, "both ends"),
+    ({"species": "Striper", "count": 5, "len_min": -3}, "greater than zero"),
+    ({"species": "Striper", "count": 5, "len_max": 900}, "exceed"),
     ({"species": "Striper", "count": 99999}, "exceed"),
     ({"species": "Striper", "count": 5, "len_min": 23, "len_max": 900}, "exceed"),
 ])

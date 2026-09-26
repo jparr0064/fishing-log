@@ -134,6 +134,11 @@ def validate_session(session: dict) -> dict:
     """Validate and normalize a session dict. Returns a cleaned copy."""
     cleaned = dict(session)
 
+    # "Where you fished" written as notes. Blank is stored as NULL, not "", so
+    # the trip view can tell "wrote nothing" from "wrote something".
+    loc_notes = (cleaned.get("location_notes") or "").strip()
+    cleaned["location_notes"] = loc_notes or None
+
     # Date is required and must be ISO-parseable.
     raw_date = cleaned.get("date")
     if not raw_date:
@@ -306,22 +311,34 @@ def _method_fields(item: dict) -> dict:
 def _validate_size_range(species: str, item: dict):
     """Validate an optional observed size range on a bulk catch row.
 
-    Returns (len_min, len_max), both None when no range was given. Either both
-    ends are supplied or neither: a lone bound reads as a measurement it is not
-    ("20 fish, 23 inches" would be a lie about nineteen of them).
+    Returns (len_min, len_max); either or both may be None. One end on its own
+    is allowed (John's call, 2026-09-26): "the biggest was 37 inches" is
+    something the angler saw and is worth keeping even when the smallest
+    wasn't noted. What keeps a lone bound honest is how it is REPORTED, never
+    as a length: the DWR text says 'up to 37"' or '20" and up', so nobody can
+    read it as "21 fish, 37 inches each". See dwr_report._sizes.
     """
-    raw_min, raw_max = item.get("len_min"), item.get("len_max")
-    if raw_min in (None, "") and raw_max in (None, ""):
-        return None, None
-    if raw_min in (None, "") or raw_max in (None, ""):
-        raise ValidationError(
-            f"Give both ends of the size range for '{species}', or neither.")
-    try:
-        len_min, len_max = float(raw_min), float(raw_max)
-    except (TypeError, ValueError):
-        raise ValidationError(f"Size range for '{species}' must be numbers.")
-    if len_min <= 0 or len_max <= 0:
-        raise ValidationError(f"Size range for '{species}' must be greater than zero.")
+    def _num(raw, label):
+        if raw in (None, ""):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            raise ValidationError(f"Size range for '{species}' must be numbers.")
+        if value <= 0:
+            raise ValidationError(
+                f"{label} size for '{species}' must be greater than zero.")
+        return value
+
+    len_min = _num(item.get("len_min"), "Smallest")
+    len_max = _num(item.get("len_max"), "Largest")
+    for value in (len_min, len_max):
+        if value is not None and value > MAX_FISH_LENGTH_IN:
+            raise ValidationError(
+                f"Size range for '{species}' can't exceed {MAX_FISH_LENGTH_IN:g}\" — "
+                "check for a typo.")
+    if len_min is None or len_max is None:
+        return len_min, len_max
     if len_min > len_max:
         raise ValidationError(
             f"Size range for '{species}' is backwards — the smaller fish goes first.")
@@ -405,6 +422,7 @@ def add_session(
 def update_session(
     session_id: int, session: dict,
     fish: Optional[List[dict]] = None, spots: Optional[List[dict]] = None,
+    *, clear_coords: bool = False,
 ) -> None:
     """Replace a session's fields and (entirely) its fish and spots lists.
 
@@ -421,10 +439,16 @@ def update_session(
     # Spots drive the starting coordinate. Only touch lat/lon when spots are
     # present; if none were provided, leave the existing coords intact rather
     # than nulling them (editing a trip with an empty picker must not wipe them).
-    fields = list(db.SESSION_FIELDS)
+    #
+    # clear_coords=True is the exception: the angler switched the trip from map
+    # pins to "describe it in notes", which is a deliberate choice to drop the
+    # map location, so the starting coordinate is cleared along with the spots.
+    fields = list(db.session_fields())
     if cleaned_spots:
         cleaned["latitude"] = cleaned_spots[0]["lat"]
         cleaned["longitude"] = cleaned_spots[0]["lon"]
+    elif clear_coords:
+        cleaned["latitude"] = cleaned["longitude"] = None
     elif cleaned.get("latitude") is None and cleaned.get("longitude") is None:
         fields = [f for f in fields if f not in ("latitude", "longitude")]
 

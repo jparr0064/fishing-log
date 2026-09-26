@@ -65,6 +65,9 @@ def _sessions_df() -> pd.DataFrame:
     # trip_uuid only exists after migration 003; select it when present so the
     # export works either side of that migration.
     uuid_col = ", trip_uuid" if db.has_trip_uuid_column() else ""
+    # location_notes only exists after migration 006; same treatment.
+    if db.has_location_notes_column():
+        uuid_col += ", location_notes"
     q = text(f"""
         SELECT id AS session_id, date, start_time, end_time, hours_fished,
                location_name, latitude, longitude, weather, air_temp,
@@ -77,6 +80,8 @@ def _sessions_df() -> pd.DataFrame:
         df = pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
     if "trip_uuid" not in df.columns:
         df["trip_uuid"] = None
+    if "location_notes" not in df.columns:
+        df["location_notes"] = None
     return df
 
 
@@ -171,6 +176,7 @@ def export_backup(
             "dwr_filed": int(bool(r.dwr_filed)),
             "dwr_filed_at": _s(r.dwr_filed_at),
             "notes": _s(r.notes),
+            "location_notes": _s(r.location_notes),
             "moon_phase": _s(r.moon_phase),
             "fish": by_sid_fish.get(sid, []),
             "spots": by_sid_spots.get(sid, []),
@@ -388,7 +394,7 @@ _SESSION_KEYS = (
     "date", "start_time", "end_time", "hours_fished", "location_name",
     "latitude", "longitude", "weather", "air_temp", "water_temp",
     "bait_lure", "fishing_style", "num_anglers", "dwr_filed",
-    "notes", "moon_phase",
+    "notes", "moon_phase", "location_notes",
 )
 
 
