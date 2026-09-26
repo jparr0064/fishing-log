@@ -96,6 +96,7 @@ jobs:
         env:
           API_URL: ${{ secrets.SUPABASE_URL_PROD }}
           ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_PROD }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL_PROD }}
         run: |
           set -uo pipefail
           if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
@@ -109,8 +110,10 @@ jobs:
           # Build the URL from the 20-character project ref, wherever it sits in
           # what was pasted: the project URL, a postgresql:// connection string
           # (db.<ref>.supabase.co or the pooler's postgres.<ref> user), or a
-          # dashboard link. A bare https://<ref>.supabase.co is not guaranteed.
-          ref=$(printf '%s' "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
+          # dashboard link. The DB URL secret is tried first because the psql
+          # step above proves it points at the live project; on 2026-09-26 the
+          # separately pasted prod URL named a host that did not exist.
+          ref=$(printf '%s\n%s' "$DB_URL" "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
           if [ -z "$ref" ]; then
             # Describe the value's shape without printing it: this log is public.
             echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
@@ -120,13 +123,14 @@ jobs:
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
-                   "${API_URL%/}/auth/v1/health" || true)  # -w already prints 000 on failure
+                   "${API_URL%/}/auth/v1/health")  # -w prints 000 on failure
+          rc=$?
           echo "Production API gateway: HTTP $code"
           case "$code" in
             2*) ;;
             *)
               # Supabase's error bodies name the problem and never echo the key.
-              echo "::error::Production API ping got HTTP $code: $(head -c 200 "$resp" | tr -d '\r\n')"
+              echo "::error::Production API ping got HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
               exit 1
               ;;
           esac
@@ -136,6 +140,7 @@ jobs:
         env:
           API_URL: ${{ secrets.SUPABASE_URL_SANDBOX }}
           ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_SANDBOX }}
+          DB_URL: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
         run: |
           set -uo pipefail
           if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
@@ -149,8 +154,10 @@ jobs:
           # Build the URL from the 20-character project ref, wherever it sits in
           # what was pasted: the project URL, a postgresql:// connection string
           # (db.<ref>.supabase.co or the pooler's postgres.<ref> user), or a
-          # dashboard link. A bare https://<ref>.supabase.co is not guaranteed.
-          ref=$(printf '%s' "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
+          # dashboard link. The DB URL secret is tried first because the psql
+          # step above proves it points at the live project; on 2026-09-26 the
+          # separately pasted prod URL named a host that did not exist.
+          ref=$(printf '%s\n%s' "$DB_URL" "$API_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
           if [ -z "$ref" ]; then
             # Describe the value's shape without printing it: this log is public.
             echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
@@ -160,13 +167,14 @@ jobs:
           resp=$(mktemp)
           code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
                    -H "apikey: $ANON_KEY" \
-                   "${API_URL%/}/auth/v1/health" || true)  # -w already prints 000 on failure
+                   "${API_URL%/}/auth/v1/health")  # -w prints 000 on failure
+          rc=$?
           echo "Sandbox API gateway: HTTP $code"
           case "$code" in
             2*) ;;
             *)
               # Supabase's error bodies name the problem and never echo the key.
-              echo "::error::Sandbox API ping got HTTP $code: $(head -c 200 "$resp" | tr -d '\r\n')"
+              echo "::error::Sandbox API ping got HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
               exit 1
               ;;
           esac
