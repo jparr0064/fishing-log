@@ -10,6 +10,8 @@ name: Keep Supabase awake
 # hit prod. The last step now fails if a DB URL secret names the wrong project.
 # Each project also gets an API-gateway ping, in case Supabase's activity
 # check doesn't count direct Postgres connections. Secrets per project:
+# (SUPABASE_DB_URL_* and SUPABASE_URL_* differ only by "DB_" and sit next to
+# each other in GitHub's list; a paste into the wrong one is easy to make.)
 #   SUPABASE_DB_URL_<PROD|SANDBOX>    postgresql:// string (session/transaction
 #                                     pooler; runners have no IPv6)
 #   SUPABASE_URL_<PROD|SANDBOX>       https://<project-ref>.supabase.co
