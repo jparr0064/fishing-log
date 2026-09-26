@@ -1125,34 +1125,38 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
         if not defer_rerun:
             st.rerun()
 
-    n = len(_fish_from_editor(edited, skip_starter=skip_starter))
+    counted = _fish_from_editor(edited, skip_starter=skip_starter)
+    n = len(counted)
     if n:
-        extra = " (blank rows aren't counted)" if len(edited) > n else ""
-        st.caption(f"🎣 **Fish entered: {n}**{extra}")
+        # Read the sizes back so the angler can see it took THEIR numbers.
+        sizes = [f'{dwr_report._fmt_num(f["length"])}"' if f.get("length")
+                 else f'{dwr_report._fmt_num(f["weight"])} lb' if f.get("weight")
+                 else f["species"] for f in counted]
+        shown = ", ".join(sizes[:12]) + (f", +{n - 12} more" if n > 12 else "")
+        st.success(f"✓ **{n} measured fish added:** {shown}")
     elif skip_starter:
-        st.caption("🎣 **Fish entered: 0** — the starter row doesn't count until "
-                   "you give it a length, weight, depth or tick Kept.")
+        st.caption("No measured fish yet. Type a length in the Striper row to add one.")
     else:
-        st.caption("🎣 **Fish entered: 0** — leave the table blank for a skunked trip.")
+        st.caption("No measured fish on this trip.")
     return edited
 
 
 def _is_untouched_starter(r) -> bool:
-    """True for a row that still looks exactly like the pre-filled starter row.
+    """True for a measured-fish row with no length and no weight.
 
     The measured-fish table opens with one Striper row so the bait/style
     defaults are visible and a normal trip is one less click. But a row the
     angler never filled in is not a fish: counting it logged a fish nobody
     caught whenever someone used only the "counted but didn't measure" groups.
-    Species alone is not enough to count here, because the default species is
-    already set. Any length, weight, depth or a ticked Kept makes it real.
+
+    The rule shown on screen is one sentence (John, 2026-09-26): a measured
+    fish needs a length or a weight. Depth and Kept describe a fish; they
+    don't make one. A fish nobody measured belongs in the groups below.
     """
     def _num(col):
         v = r.get(col)
         return float(v) if v is not None and pd.notna(v) else 0.0
-    return (str(r.get("species") or "").strip() == DEFAULT_SPECIES
-            and _num("length") <= 0 and _num("weight") <= 0 and _num("depth") <= 0
-            and not (pd.notna(r.get("kept")) and bool(r.get("kept"))))
+    return _num("length") <= 0 and _num("weight") <= 0
 
 
 def _fish_from_editor(edited: pd.DataFrame, skip_starter: bool = False) -> list:
@@ -1515,6 +1519,20 @@ def page_log_session():
         st.divider()
         save = st.button("💾  Save this trip", type="primary",
                          use_container_width=True, key="log_save")
+        skunk_confirmed = False
+        if st.session_state.get("log_confirm_skunk"):
+            st.warning("**No fish entered.** Save this as a skunked trip?")
+            yes_col, back_col = st.columns(2)
+            skunk_confirmed = yes_col.button("Yes, I got skunked", type="primary",
+                                             use_container_width=True,
+                                             key="log_skunk_yes")
+            if back_col.button("Go back and add fish", use_container_width=True,
+                               key="log_skunk_back"):
+                st.session_state.pop("log_confirm_skunk", None)
+                st.rerun()
+            # Treat the confirm click as the save click, so the sections below
+            # defer their own reruns exactly as they do for Save.
+            save = save or skunk_confirmed
         st.caption("Saves everything above — the trip, where you fished, and every "
                    "fish. If you logged stripers, a DWR report option appears next.")
 
@@ -1607,22 +1625,14 @@ def page_log_session():
     with sec_catch:
         st.subheader("3 · What you caught")
 
-        # The disambiguator for a seeded row. Both tables start with a row
-        # already set to Striper, which is one less click on a normal trip —
-        # but it also means an untouched table is no longer proof that nothing
-        # was caught. This checkbox says so explicitly, and it makes a skunked
-        # trip a deliberate act rather than a side effect of leaving things
-        # blank.
-        skunked = st.checkbox(
-            "🚫  No fish caught (skunked trip)", key="log_skunked",
-            help="Tick this and the tables below are ignored — a blank trip is "
-                 "still worth logging, and it feeds your success-rate stats.")
-
-        if skunked:
-            st.caption("The catch tables are being ignored. Press Save to log this "
-                       "as a skunked trip.")
-
+        # There used to be a "No fish caught (skunked trip)" checkbox here. It
+        # existed because the starter row counted as a fish, so a blank table
+        # was not proof of a skunk. The starter row no longer counts, which
+        # made the box a second way of saying "0" and confused people. A
+        # skunked trip is now confirmed at Save instead (see log_confirm_skunk).
         st.markdown("**Fish you measured** — one row each")
+        st.caption("Type a length (or weight) to add a fish. Use the empty row "
+                   "below it to add another.")
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
                                     defer_rerun=save, skip_starter=True,
                                     trip_bait=trip_bait, trip_style=trip_style,
@@ -1641,24 +1651,26 @@ def page_log_session():
         # looked like it had not registered at all.
         _measured = len(_fish_from_editor(catch_editor, skip_starter=True))
         _grouped = sum(int(g["count"]) for g in bulk_groups)
-        if skunked:
-            st.info("**Skunked trip** — the tables above are being ignored.")
-        elif _measured or _grouped:
+        if _measured or _grouped:
+            # Fish were added after a "save as skunked?" prompt: drop it.
+            st.session_state.pop("log_confirm_skunk", None)
             st.success(
                 f"**{_measured + _grouped} fish this trip** — "
                 f"{_measured} measured individually, {_grouped} in groups."
             )
         else:
-            st.caption("No fish entered yet. Save as-is to log a skunked trip, "
-                       "or tick the box above to be explicit about it.")
+            st.caption("No fish entered yet. Got skunked? Just press Save.")
 
         _dwr_size_preview(_fish_from_editor(catch_editor, skip_starter=True) + bulk_groups)
 
     # ---------------- save ---------------------------------------------
     if save:
-        # A skunked trip records no fish no matter what the tables hold.
-        fish = [] if skunked else (
-            _fish_from_editor(catch_editor, skip_starter=True) + bulk_groups)
+        fish = _fish_from_editor(catch_editor, skip_starter=True) + bulk_groups
+        # Zero fish is a skunked trip, but only once the angler says so: a
+        # forgotten catch table must not quietly become a skunk.
+        if not fish and not skunk_confirmed:
+            st.session_state["log_confirm_skunk"] = True
+            st.rerun()
         # No coordinate fallback: a trip with no pin saves with no coordinates
         # rather than inventing one at the lake default, which fabricated a
         # location and distorted the Map page.

@@ -413,6 +413,41 @@ def test_counted_fish_only_saves_no_phantom_and_one_ended_range(db_url_notes):
     assert not _rows(db_url_notes, "SELECT * FROM spots")
 
 
+def test_saving_with_no_fish_asks_before_logging_a_skunk(db_url_notes):
+    """No skunk checkbox any more: an empty catch is confirmed at Save."""
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    _assert_no_exception(at)
+    assert not any("skunked trip" in (c.label or "") for c in at.checkbox), \
+        "the old skunked checkbox should be gone"
+
+    at.button(key="log_save").click().run()
+    _assert_no_exception(at)
+    assert not _rows(db_url_notes, "SELECT * FROM sessions"), \
+        "an empty catch must not save until the angler confirms"
+    assert "Save this as a skunked trip?" in _text(at)
+
+    at.button(key="log_skunk_yes").click().run()
+    _assert_no_exception(at)
+    assert len(_rows(db_url_notes, "SELECT * FROM sessions")) == 1
+    assert not _rows(db_url_notes, "SELECT * FROM fish")
+
+
+def test_measured_fish_needs_a_length_or_weight():
+    import pandas as pd
+    sys.path.insert(0, os.path.dirname(APP))
+    import app as app_mod
+    df = pd.DataFrame([
+        {"species": "Striper", "length": None, "weight": None, "depth": 30.0, "kept": True},
+        {"species": "Striper", "length": 24.0, "weight": None, "depth": None, "kept": False},
+        {"species": "Bass", "length": None, "weight": 3.5, "depth": None, "kept": False},
+    ])
+    got = app_mod._fish_from_editor(df, skip_starter=True)
+    assert [f["species"] for f in got] == ["Striper", "Bass"], \
+        "depth or Kept alone doesn't make a fish; length or weight does"
+
+
 def test_trip_described_in_notes_shows_notes_not_a_blank_map(db_url_notes):
     from sqlalchemy import create_engine, text
     engine = create_engine(db_url_notes)

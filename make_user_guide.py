@@ -129,6 +129,11 @@ story.append(Paragraph(
     "list</b> and type it. Once you log a fish with it, it stays in your list for good.", body))
 
 story.append(Paragraph("2 · Where you fished", h2))
+B("Pick one of two buttons: <b>Drop pins on a map</b> or <b>Describe it in notes</b>. Nothing "
+  "opens until you pick, and you can skip both.")
+B("<b>Describe it in notes</b> is for when you'd rather just write it down, like "
+  "\u201cnorth side of the Hales Ford bridge, 30 ft.\u201d")
+B("<b>Drop pins on a map</b> works as below, with an optional notes box under the map.")
 B("Click the map to drop your starting pin. Click again to add each spot along your troll.")
 B("The map opens centered on the water you fished <b>last trip</b> — handy if you pound the same spots.")
 B("Under the map, enter how many fish you caught at each spot (0 = none). Spots with fish "
@@ -159,11 +164,11 @@ story.append(Paragraph(
     "at the bottom and it becomes a new fish. Check <b>Kept?</b> for harvested fish; leave it "
     "unchecked for released.", body))
 story.append(Paragraph(
-    "<b>Only the species is required</b> — a fish with just a species still counts in every "
-    "catch stat (totals, success rate, fish per hour). Length, depth and weight are optional. "
-    "The trade-off is simple: whatever you enter feeds your Analytics, and whatever you skip "
-    "just sits out those charts. Measure your fish and the Sizes and Personal Bests pages "
-    "come alive.", body))
+    "<b>A fish counts here once it has a length or a weight.</b> Depth and Kept are extras. "
+    "As you add fish, a green line reads your sizes back to you (for example "
+    "<i>\u201c\u2713 2 measured fish added: 24\", 31\"\u201d</i>) so you know it took. Caught "
+    "some you didn't measure? Put them in the next section instead. Measure your fish and "
+    "the Sizes and Personal Bests pages come alive.", body))
 story.append(Paragraph(
     "Each row also has <b>Bait</b> and <b>Style</b>, already set to your primary method. Change "
     "them on any fish you caught a different way — and the next row you add keeps whatever you "
@@ -175,8 +180,9 @@ story.append(Paragraph(
 story.append(Paragraph("Fish you counted but didn't measure", h2))
 story.append(Paragraph(
     "For the tail end of a good day. Twenty fish in the boat and you measured three of them? "
-    "Enter the three above, then use this for the other seventeen: how many, and the range of "
-    "sizes you saw. Set the bait and style for the group, and tick Kept if they were harvested.", body))
+    "Enter the three above, then use this for the other seventeen: how many, and the sizes "
+    "you saw. Smallest and largest are both optional, so fill in either one or both. Set the "
+    "bait and style for the group, and tick Kept if they were harvested.", body))
 story.append(Paragraph(
     "It's recorded honestly as a range — the app never pretends those were seventeen individual "
     "measurements. The biggest end of your range still counts for your personal best, because "
@@ -189,9 +195,10 @@ story.append(Paragraph(
 
 story.append(Paragraph("Got skunked?", h2))
 story.append(Paragraph(
-    "Tick <b>No fish caught (skunked trip)</b> at the top of section 3 and press Save. The "
-    "tables are ignored entirely. Skunked trips are real data — they're what makes your "
-    "success rate mean anything.", body))
+    "Leave the fish tables empty and press Save. The app asks <b>Save this as a skunked "
+    "trip?</b> so a forgotten catch never turns into a skunk by accident. Tap <b>Yes, I got "
+    "skunked</b>. Skunked trips are real data — they're what makes your success rate mean "
+    "anything.", body))
 
 story.append(Paragraph("Saving", h2))
 story.append(Paragraph(
@@ -315,7 +322,8 @@ faq = [
      "own log — no other member can see it. (As with any shared cloud database, John, as the "
      "administrator, can access the database when maintaining the app.)"),
     ("I got skunked. Do I still log it?", "Absolutely — skunked trips are data too, and the DWR wants "
-     "those reports just as much. Tick No fish caught (skunked trip) in section 3 and save."),
+     "those reports just as much. Leave the fish tables empty, press Save, and tap "
+     "Yes, I got skunked."),
     ("I made a mistake on a trip.", "Browse &amp; Search → Open trip → Edit this trip. Fix it and "
      "press Save changes. Cancel editing backs out without changing anything."),
     ("Can I lose my data?", "It lives in a cloud database, not on your phone. There is no second "
