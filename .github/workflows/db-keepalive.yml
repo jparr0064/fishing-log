@@ -20,6 +20,11 @@ on:
     # 07:00 UTC = 3:00 AM Eastern, every day
     - cron: "0 7 * * *"
   workflow_dispatch:
+  # Run once whenever this file changes, so an edit is proven on the spot
+  # instead of at 3 AM.
+  push:
+    branches: [cloud-version]
+    paths: [.github/workflows/db-keepalive.yml]
 
 jobs:
   ping:
