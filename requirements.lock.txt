@@ -50,8 +50,8 @@ requests==2.34.2
 rpds-py==2026.6.3
 six==1.17.0
 smmap==5.0.3
-SQLAlchemy==2.0.54
-starlette==1.6.0
+SQLAlchemy==2.1.0
+starlette==1.7.0
 streamlit==1.60.0
 streamlit-folium==0.27.4
 streamlit-geolocation==0.0.10
@@ -60,7 +60,7 @@ toml==0.10.2
 typing_extensions==4.16.0
 tzdata==2026.4
 urllib3==2.8.0
-uvicorn==0.53.0
+uvicorn==0.54.0
 watchdog==6.0.0
 websockets==16.1.1
 xyzservices==2026.9.1
