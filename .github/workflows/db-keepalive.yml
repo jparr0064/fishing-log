@@ -34,8 +34,41 @@ on:
 jobs:
   ping:
     runs-on: ubuntu-latest
+    env:
+      # The sandbox's project ref. Not a secret: it is in the project's public
+      # URL. On 2026-10-10 Supabase warned this project was idle even though
+      # every run since 2026-09-26 passed, and the old check only proved the two
+      # sandbox secrets agreed with each other, not that they named this project.
+      SANDBOX_REF: vgzmzlwzbaqurayucmdg
     steps:
+      - name: Check the sandbox secrets name the sandbox project
+        env:
+          DB_SANDBOX: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
+          URL_SANDBOX: ${{ secrets.SUPABASE_URL_SANDBOX }}
+        run: |
+          # Handles https://<ref>.supabase.co, the direct db.<ref>.supabase.co
+          # host, and the pooler's postgres.<ref> user. Only the expected ref
+          # (already public above) and yes/no are ever printed.
+          ref() {
+            printf '%s' "$1" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true
+          }
+          ok=yes
+          for name in SUPABASE_DB_URL_SANDBOX SUPABASE_URL_SANDBOX; do
+            case $name in
+              SUPABASE_DB_URL_SANDBOX) got=$(ref "$DB_SANDBOX") ;;
+              *)                       got=$(ref "$URL_SANDBOX") ;;
+            esac
+            if [ "$got" = "$SANDBOX_REF" ]; then
+              echo "$name names $SANDBOX_REF: yes"
+            else
+              echo "::error::$name does not name the sandbox project $SANDBOX_REF (ref found: $([ -n "$got" ] && echo yes || echo no)). Re-paste it from .streamlit/secrets.sandbox.toml."
+              ok=no
+            fi
+          done
+          [ "$ok" = yes ]
+
       - name: Ping production database
+        if: always()
         env:
           RAW_URL: ${{ secrets.SUPABASE_DB_URL_PROD }}
         run: |
@@ -94,7 +127,9 @@ jobs:
           rest=$(printf '%s' "$rest" | sed 's/[[:space:]]*$//')
           rest="${rest%\"}"
           rest="${rest%\'}"
-          psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now();"
+          # Read a real table, not just now(), in case a bare query doesn't
+          # register as activity. RLS may hide every row; the read still runs.
+          psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now() || ', sessions rows visible: ' || (select count(*) from (select id from public.sessions limit 1) s);"
 
       - name: Ping production API gateway
         if: always()
@@ -142,50 +177,43 @@ jobs:
           echo "::error::Production API ping failed for all $n candidate project(s); last got HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
           exit 1
 
-      - name: Ping sandbox API gateway
+      - name: Ping sandbox API (REST read of a real table)
         if: always()
         env:
-          API_URL: ${{ secrets.SUPABASE_URL_SANDBOX }}
           ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_SANDBOX }}
-          DB_URL: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
         run: |
           set -uo pipefail
-          if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
-            echo "::error::SUPABASE_URL_SANDBOX or SUPABASE_ANON_KEY_SANDBOX is not set."
+          if [ -z "$ANON_KEY" ]; then
+            echo "::error::SUPABASE_ANON_KEY_SANDBOX is not set."
             exit 1
           fi
-          # Only the apikey header: Supabase's newer publishable keys are not
-          # JWTs and are rejected when also sent as a Bearer token. The auth
-          # health endpoint accepts any valid project key, while the REST root
-          # (/rest/v1/) now refuses the anon key.
-          # Try every project ref found in the URL and DB URL secrets (the
-          # project URL, a postgresql:// string with db.<ref>.supabase.co or the
-          # pooler's postgres.<ref> user, or a dashboard link) and succeed on the
-          # first one the key belongs to. On 2026-09-26 each secret pair had one
-          # wrong entry — SUPABASE_URL_PROD named a dead project and
-          # SUPABASE_DB_URL_SANDBOX held prod's string — so trusting either
-          # alone failed one project or the other.
-          refs=$(printf '%s\n%s\n' "$API_URL" "$DB_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | awk '!seen[$0]++' || true)
-          if [ -z "$refs" ]; then
-            # Describe the value's shape without printing it: this log is public.
-            echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
-            exit 1
-          fi
+          # Goes straight to the pinned sandbox ref: the first step already
+          # fails the run if the URL secrets name anything else.
+          # A table read through PostgREST, rather than /auth/v1/health, in case
+          # Supabase doesn't count the auth health check as activity. Only the
+          # apikey header: newer publishable keys are rejected as a Bearer token.
+          # migrations/001 revokes all table rights from anon, so the expected
+          # answer is HTTP 401 with Postgres code 42501 (permission denied).
+          # Postgres has to receive the query to refuse it, so that counts as
+          # reaching the database. A 2xx (if anon is ever granted SELECT) passes
+          # too. A 401 without 42501 means the key itself was rejected.
           resp=$(mktemp)
-          n=0
-          for ref in $refs; do
-            n=$((n + 1))
-            # GitHub runs this under bash -e, so catch curl's failure here or a
-            # dead first candidate ends the step before the next one is tried.
-            rc=0
-            code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
-                     -H "apikey: $ANON_KEY" \
-                     "https://$ref.supabase.co/auth/v1/health") || rc=$?  # -w prints 000 on failure
-            echo "Sandbox API gateway, candidate $n: HTTP $code"
-            case "$code" in 2*) exit 0 ;; esac
-          done
+          rc=0
+          code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" \
+                   "https://$SANDBOX_REF.supabase.co/rest/v1/sessions?select=id&limit=1") || rc=$?  # -w prints 000 on failure
+          echo "Sandbox REST read of sessions: HTTP $code"
+          case "$code" in
+            2*) exit 0 ;;
+            401|403)
+              if grep -q '"42501"' "$resp"; then
+                echo "Postgres refused the anon role (42501), so the query reached the sandbox database."
+                exit 0
+              fi
+              ;;
+          esac
           # Supabase's error bodies name the problem and never echo the key.
-          echo "::error::Sandbox API ping failed for all $n candidate project(s); last got HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
+          echo "::error::Sandbox REST ping failed: HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
           exit 1
 
       - name: Check the secrets point at the projects they're named for
@@ -206,7 +234,6 @@ jobs:
           same() { [ -n "$1" ] && [ "$1" = "$2" ] && echo yes || echo no; }
           dp=$(ref "$DB_PROD"); ds=$(ref "$DB_SANDBOX"); up=$(ref "$URL_PROD"); us=$(ref "$URL_SANDBOX")
           echo "::notice::DB_URL_SANDBOX same project as URL_SANDBOX: $(same "$ds" "$us") | DB_URL_SANDBOX same as DB_URL_PROD: $(same "$ds" "$dp") | DB_URL_PROD same as URL_PROD: $(same "$dp" "$up") | refs found (dbP dbS urlP urlS): $(yn "$dp") $(yn "$ds") $(yn "$up") $(yn "$us")"
-          # A warning, not a failure: the sandbox API-gateway ping still reaches
-          # the right project, so a wrong DB URL here is worth fixing but not
-          # worth a daily "Run failed" email.
-          [ "$(same "$ds" "$us")" = yes ] || echo "::warning::SUPABASE_DB_URL_SANDBOX does not point at the sandbox project; the sandbox psql ping is hitting another database."
+          # The sandbox refs are enforced by the first step; this one only
+          # reports, mainly so a still-wrong SUPABASE_URL_PROD stays visible.
+          [ "$(same "$dp" "$up")" = yes ] || echo "::warning::SUPABASE_URL_PROD and SUPABASE_DB_URL_PROD name different projects; SUPABASE_URL_PROD probably still holds the dead project's URL."
