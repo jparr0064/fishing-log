@@ -17,13 +17,23 @@ name: Keep Supabase awake
 #   SUPABASE_URL_<PROD|SANDBOX>       https://<project-ref>.supabase.co
 #   SUPABASE_ANON_KEY_<PROD|SANDBOX>  the anon / publishable key
 #
+# What Supabase counts (learned the hard way): a bare `select now()` and the
+# /auth/v1/health check did NOT keep a project awake. The sandbox was warned on
+# 2026-10-10 with both passing daily; after it switched to a table read plus a
+# PostgREST request it went a week with no warning, while prod, still on the
+# old pings, was warned on 2026-10-16 even though the app had been used. The
+# app talks straight to Postgres, never through Supabase's API, so real use may
+# not register either. Both projects now get the table read + REST request.
+#
 # IMPORTANT: this file must live on the repo's DEFAULT branch
 # (cloud-version) or GitHub will never fire the schedule.
 
 on:
   schedule:
-    # 07:00 UTC = 3:00 AM Eastern, every day
-    - cron: "0 7 * * *"
+    # Twice a day, 07:00 and 19:00 UTC (3 AM / 3 PM Eastern). Supabase asks for
+    # "a few requests each day"; GitHub sometimes delays or drops a scheduled
+    # run, so one a day leaves no margin.
+    - cron: "0 7,19 * * *"
   workflow_dispatch:
   # Run once whenever this file changes, so an edit is proven on the spot
   # instead of at 3 AM.
@@ -40,8 +50,24 @@ jobs:
       # every run since 2026-09-26 passed, and the old check only proved the two
       # sandbox secrets agreed with each other, not that they named this project.
       SANDBOX_REF: vgzmzlwzbaqurayucmdg
+      # Production's ref, pinned the same way. SUPABASE_URL_PROD still names a
+      # dead project, so nothing below relies on it.
+      PROD_REF: dzeymlmnhocsucvplzna
     steps:
+      - name: Check the production DB secret names the production project
+        env:
+          DB_PROD: ${{ secrets.SUPABASE_DB_URL_PROD }}
+        run: |
+          got=$(printf '%s' "$DB_PROD" | grep -oE '([a-z0-9]{20})\.supabase\.co|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | head -n1 || true)
+          if [ "$got" = "$PROD_REF" ]; then
+            echo "SUPABASE_DB_URL_PROD names $PROD_REF: yes"
+          else
+            echo "::error::SUPABASE_DB_URL_PROD does not name the production project $PROD_REF (ref found: $([ -n "$got" ] && echo yes || echo no)). Re-paste it from .streamlit/secrets.toml."
+            exit 1
+          fi
+
       - name: Check the sandbox secrets name the sandbox project
+        if: always()
         env:
           DB_SANDBOX: ${{ secrets.SUPABASE_DB_URL_SANDBOX }}
           URL_SANDBOX: ${{ secrets.SUPABASE_URL_SANDBOX }}
@@ -96,7 +122,8 @@ jobs:
           rest=$(printf '%s' "$rest" | sed 's/[[:space:]]*$//')
           rest="${rest%\"}"
           rest="${rest%\'}"
-          psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'production alive at ' || now();"
+          # Read a real table, not just now() (see the note at the top).
+          psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'production alive at ' || now() || ', sessions rows visible: ' || (select count(*) from (select id from public.sessions limit 1) s);"
 
       - name: Ping sandbox database
         if: always()
@@ -131,50 +158,39 @@ jobs:
           # register as activity. RLS may hide every row; the read still runs.
           psql "postgresql://$rest" -v ON_ERROR_STOP=1 -At -c "select 'sandbox alive at ' || now() || ', sessions rows visible: ' || (select count(*) from (select id from public.sessions limit 1) s);"
 
-      - name: Ping production API gateway
+      - name: Ping production API (REST read of a real table)
         if: always()
         env:
-          API_URL: ${{ secrets.SUPABASE_URL_PROD }}
           ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY_PROD }}
-          DB_URL: ${{ secrets.SUPABASE_DB_URL_PROD }}
         run: |
           set -uo pipefail
-          if [ -z "$API_URL" ] || [ -z "$ANON_KEY" ]; then
-            echo "::error::SUPABASE_URL_PROD or SUPABASE_ANON_KEY_PROD is not set."
+          if [ -z "$ANON_KEY" ]; then
+            echo "::error::SUPABASE_ANON_KEY_PROD is not set."
             exit 1
           fi
-          # Only the apikey header: Supabase's newer publishable keys are not
-          # JWTs and are rejected when also sent as a Bearer token. The auth
-          # health endpoint accepts any valid project key, while the REST root
-          # (/rest/v1/) now refuses the anon key.
-          # Try every project ref found in the URL and DB URL secrets (the
-          # project URL, a postgresql:// string with db.<ref>.supabase.co or the
-          # pooler's postgres.<ref> user, or a dashboard link) and succeed on the
-          # first one the key belongs to. On 2026-09-26 each secret pair had one
-          # wrong entry — SUPABASE_URL_PROD named a dead project and
-          # SUPABASE_DB_URL_SANDBOX held prod's string — so trusting either
-          # alone failed one project or the other.
-          refs=$(printf '%s\n%s\n' "$API_URL" "$DB_URL" | grep -oE '([a-z0-9]{20})\.supabase\.co|/project/[a-z0-9]{20}|postgres\.[a-z0-9]{20}[:@]' | grep -oE '[a-z0-9]{20}' | awk '!seen[$0]++' || true)
-          if [ -z "$refs" ]; then
-            # Describe the value's shape without printing it: this log is public.
-            echo "::error::No Supabase project ref found in the URL secret (${#API_URL} characters, starts with '$(printf '%s' "$API_URL" | head -c 8 | tr -cd 'A-Za-z:/.')'). It should be https://<project-ref>.supabase.co."
-            exit 1
-          fi
+          # Same request as the sandbox step below, which is what stopped the
+          # sandbox's idle warnings: a PostgREST read on the pinned ref (so the
+          # dead SUPABASE_URL_PROD no longer matters). Only the apikey header.
+          # anon has no table rights (migrations/001), so the expected answer is
+          # HTTP 401 with Postgres code 42501: the query reached the database.
+          # A 2xx passes too; a 401 without 42501 means the key was rejected.
           resp=$(mktemp)
-          n=0
-          for ref in $refs; do
-            n=$((n + 1))
-            # GitHub runs this under bash -e, so catch curl's failure here or a
-            # dead first candidate ends the step before the next one is tried.
-            rc=0
-            code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
-                     -H "apikey: $ANON_KEY" \
-                     "https://$ref.supabase.co/auth/v1/health") || rc=$?  # -w prints 000 on failure
-            echo "Production API gateway, candidate $n: HTTP $code"
-            case "$code" in 2*) exit 0 ;; esac
-          done
+          rc=0
+          code=$(curl -sS -o "$resp" -w '%{http_code}' --max-time 60 \
+                   -H "apikey: $ANON_KEY" \
+                   "https://$PROD_REF.supabase.co/rest/v1/sessions?select=id&limit=1") || rc=$?  # -w prints 000 on failure
+          echo "Production REST read of sessions: HTTP $code"
+          case "$code" in
+            2*) exit 0 ;;
+            401|403)
+              if grep -q '"42501"' "$resp"; then
+                echo "Postgres refused the anon role (42501), so the query reached the production database."
+                exit 0
+              fi
+              ;;
+          esac
           # Supabase's error bodies name the problem and never echo the key.
-          echo "::error::Production API ping failed for all $n candidate project(s); last got HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
+          echo "::error::Production REST ping failed: HTTP $code (curl exit $rc): $(head -c 200 "$resp" | tr -d '\r\n')"
           exit 1
 
       - name: Ping sandbox API (REST read of a real table)
