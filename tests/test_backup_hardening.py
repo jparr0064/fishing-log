@@ -364,3 +364,28 @@ def test_a_defused_backup_round_trips_to_the_original_value(_db):
 
 def test_csv_helper_handles_an_empty_frame():
     assert backup_io.to_safe_csv(pd.DataFrame(columns=["a", "b"])).startswith("a,b")
+
+
+def test_backup_round_trips_other_methods_and_per_fish_bait():
+    """Other baits used today, and each fish's own bait, survive export+restore.
+
+    This file's schema predates migrations 005/007 on purpose, so add them here.
+    """
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
+        for ddl in ("ALTER TABLE sessions ADD COLUMN other_baits TEXT",
+                    "ALTER TABLE sessions ADD COLUMN other_styles TEXT",
+                    "ALTER TABLE fish ADD COLUMN bait_lure TEXT",
+                    "ALTER TABLE fish ADD COLUMN fishing_style TEXT"):
+            conn.execute(text(ddl))
+    db._session_columns_cache.clear()
+    db._fish_columns_cache.clear()
+
+    data_entry.add_session(
+        {"date": "2026-10-10", "location_name": "SML", "bait_lure": "Live Shad",
+         "other_baits": ["Jigging Spoon"]},
+        [{"species": "Striper", "length": 24, "bait_lure": "Jigging Spoon"}])
+    data = backup_io.export_backup()
+    trip = data["sessions"][0]
+    assert data_entry.parse_methods(trip["other_baits"]) == ["Jigging Spoon"]
+    assert trip["fish"][0]["bait_lure"] == "Jigging Spoon"

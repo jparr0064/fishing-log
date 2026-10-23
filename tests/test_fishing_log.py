@@ -24,7 +24,9 @@ CREATE TABLE sessions (
     dwr_filed_at TEXT,
     notes TEXT, moon_phase TEXT,
     -- migrations/006: "where you fished" written as notes.
-    location_notes TEXT
+    location_notes TEXT,
+    -- migrations/007: other baits/styles used today, JSON list text.
+    other_baits TEXT, other_styles TEXT
 );
 CREATE TABLE fish (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1011,3 +1013,110 @@ def test_blank_method_is_stored_as_none_not_empty_string():
     fish = data_entry.validate_fish(
         [{"species": "Striper", "length": 20, "bait_lure": "  ", "fishing_style": ""}])
     assert fish[0]["bait_lure"] is None and fish[0]["fishing_style"] is None
+
+
+# ---------------------------------------------------------------------------
+# Other baits & styles used today (migrations/007)
+# ---------------------------------------------------------------------------
+
+def test_other_methods_are_normalized_and_drop_the_primary():
+    sid = data_entry.add_session(
+        {"date": "2026-10-01", "location_name": "SML",
+         "bait_lure": "Live Shad", "fishing_style": "Downlines",
+         "other_baits": ["Jigging Spoon", " ", "Live Shad", "Jigging Spoon"],
+         "other_styles": []}, [])
+    trip = search.get_session(sid)
+    assert data_entry.parse_methods(trip["other_baits"]) == ["Jigging Spoon"], \
+        "blanks, duplicates and the primary itself must not be stored"
+    assert trip["other_styles"] is None, "nothing picked is stored as NULL"
+
+
+def test_parse_methods_tolerates_junk():
+    assert data_entry.parse_methods(None) == []
+    assert data_entry.parse_methods("not json") == []
+    assert data_entry.parse_methods('{"a": 1}') == []
+    assert data_entry.parse_methods('["Spoon", ""]') == ["Spoon"]
+
+
+def test_method_tried_for_nothing_still_shows_up():
+    data_entry.add_session(
+        {"date": "2026-10-02", "location_name": "SML", "hours_fished": 4,
+         "bait_lure": "Live Shad", "other_baits": ["Umbrella Rig"]},
+        [{"species": "Striper", "length": 24}])
+    tbl = analytics.by_method("bait_lure").set_index("bait_lure")
+    assert int(tbl.loc["Umbrella Rig", "trips"]) == 1
+    assert int(tbl.loc["Umbrella Rig", "total_fish"]) == 0
+    assert int(tbl.loc["Umbrella Rig", "trips_with_fish"]) == 0
+    assert int(tbl.loc["Live Shad", "total_fish"]) == 1
+
+
+def test_other_methods_make_a_trip_mixed_for_the_rate():
+    """A trip that also ran a second bait can't feed either bait's fish/hr."""
+    data_entry.add_session(
+        {"date": "2026-10-03", "location_name": "SML", "hours_fished": 4,
+         "bait_lure": "Live Shad"},
+        [{"species": "Striper", "count": 4}])                     # clean: 1.0/hr
+    data_entry.add_session(
+        {"date": "2026-10-04", "location_name": "SML", "hours_fished": 1,
+         "bait_lure": "Live Shad", "other_baits": ["Jigging Spoon"]},
+        [{"species": "Striper", "count": 10}])                    # mixed
+    tbl = analytics.by_method("bait_lure").set_index("bait_lure")
+    assert int(tbl.loc["Live Shad", "total_fish"]) == 14
+    assert int(tbl.loc["Live Shad", "rate_trips"]) == 1
+    assert float(tbl.loc["Live Shad", "fish_per_hour"]) == 1.0
+
+
+def test_by_bait_agrees_with_per_fish_attribution():
+    """The "what's working" bait table credits fish by their own bait now."""
+    data_entry.add_session(
+        {"date": "2026-10-05", "location_name": "SML", "hours_fished": 4,
+         "bait_lure": "Live Shad"},
+        [{"species": "Striper", "length": 24},
+         {"species": "Striper", "length": 26, "bait_lure": "Jigging Spoon"}])
+    tbl = analytics.by_bait().set_index("bait_lure")
+    assert int(tbl.loc["Live Shad", "total_fish"]) == 1
+    assert int(tbl.loc["Jigging Spoon", "total_fish"]) == 1
+    assert {"sessions", "success_rate_%", "fish_per_hour",
+            "avg_fish_per_session"} <= set(tbl.columns)
+
+
+# ---------------------------------------------------------------------------
+# Journal Notes
+# ---------------------------------------------------------------------------
+
+def _note_trip(day, notes, fish=()):
+    return data_entry.add_session(
+        {"date": day, "location_name": "SML", "notes": notes, "water_temp": 64},
+        list(fish))
+
+
+def test_journal_entries_filter_range_word_and_empty_notes():
+    _note_trip("2026-03-01", "Gulls working the main channel")
+    _note_trip("2026-04-01", "Slow day, bait deep",
+               [{"species": "Striper", "length": 24}])
+    _note_trip("2026-05-01", "")
+    _note_trip("2027-01-01", "Gulls again")
+
+    got = search.journal_entries("2026-01-01", "2026-12-31")
+    assert [e["date"] for e in got] == ["2026-04-01", "2026-03-01"], \
+        "newest first, in range, trips without notes hidden"
+    assert got[0]["total_fish"] == 1
+
+    oldest = search.journal_entries("2026-01-01", "2026-12-31", oldest_first=True)
+    assert [e["date"] for e in oldest] == ["2026-03-01", "2026-04-01"]
+
+    gulls = search.journal_entries("2026-01-01", "2027-12-31", word="GULLS")
+    assert [e["date"] for e in gulls] == ["2027-01-01", "2026-03-01"]
+
+    everything = search.journal_entries("2026-01-01", "2026-12-31",
+                                        only_with_notes=False)
+    assert len(everything) == 3
+
+
+def test_journal_entries_are_scoped_to_the_user():
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO sessions (user_email, date, location_name, notes) "
+            "VALUES ('someone@else.com', '2026-03-02', 'SML', 'their secret spot')"))
+    assert search.journal_entries("2026-01-01", "2026-12-31") == []

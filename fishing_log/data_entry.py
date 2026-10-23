@@ -6,6 +6,7 @@ one per fish. Zero fish means a skunked trip.
 """
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import date as _date, datetime
 from typing import List, Optional
@@ -130,9 +131,52 @@ def compute_hours(start_time: Optional[str], end_time: Optional[str]) -> Optiona
     return round(delta, 2)
 
 
+def parse_methods(value) -> list:
+    """A stored "other methods" value as a list of names.
+
+    Accepts the JSON text the database holds, a list, or nothing. Anything
+    unreadable is treated as nothing rather than breaking the trip view.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        text_value = str(value).strip()
+        if not text_value:
+            return []
+        try:
+            items = json.loads(text_value)
+        except ValueError:
+            return []
+        if not isinstance(items, list):
+            return []
+    return [str(i).strip() for i in items if i is not None and str(i).strip()]
+
+
+def _methods_text(value, primary) -> Optional[str]:
+    """Normalize "other methods" for storage: JSON list text, or None.
+
+    Blanks and duplicates are dropped, and so is the primary itself, which
+    would otherwise be counted twice for the same trip.
+    """
+    primary = (primary or "").strip()
+    out = []
+    for m in parse_methods(value):
+        if m != primary and m not in out:
+            out.append(m)
+    return json.dumps(out) if out else None
+
+
 def validate_session(session: dict) -> dict:
     """Validate and normalize a session dict. Returns a cleaned copy."""
     cleaned = dict(session)
+
+    # Methods used besides the primary (migration 007).
+    cleaned["other_baits"] = _methods_text(cleaned.get("other_baits"),
+                                           cleaned.get("bait_lure"))
+    cleaned["other_styles"] = _methods_text(cleaned.get("other_styles"),
+                                            cleaned.get("fishing_style"))
 
     # "Where you fished" written as notes. Blank is stored as NULL, not "", so
     # the trip view can tell "wrote nothing" from "wrote something".

@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-09-26.1"
+APP_BUILD = "2026-10-22.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -50,6 +50,35 @@ DEFAULT_FROM_DATE = date(2026, 1, 1)
 # Trip cards drawn per Browse page. Two per row, so this is 10 rows — enough to
 # scan a season without building 500 card blocks on every rerun (CR-5).
 BROWSE_PAGE_SIZE = 20
+
+# Trip notes prompt. Notes are what the Journal Notes page is built from, so
+# nudge toward the kind worth rereading a season later.
+NOTES_PLACEHOLDER = ("What did you see? Bait, birds, where the fish were, "
+                     "what changed during the day…")
+
+# Catch-entry guidance, shared by Log a Session and Edit trip. People assumed
+# every column had to be filled in before a trip would save; only two do.
+CATCH_REQUIRED_NOTE = ("**Required:** species and a length *or* weight. "
+                       "Everything else (depth, kept, bait, style) is optional.")
+CATCH_METHOD_NOTE = ("Bait and Style per fish are optional. Leave them as they are "
+                     "and we'll assume the first bait and style you listed. Change them when "
+                     "a fish came on something else, and Analytics can show what "
+                     "actually caught your fish.")
+BULK_GROUPS_NOTE = "Caught them different ways? Add a group for each bait or style."
+
+# The "How these numbers work" note at the top of Analytics.
+ANALYTICS_EXPLAINER = (
+    "- **The more you log, the sharper these get.** Water temp, times, and "
+    "per-fish details all feed these numbers.\n"
+    "- **Bait and style are credited fish by fish.** Each fish counts toward the "
+    "bait and style you set on it. If you left those as they were, it counts "
+    "toward the first bait and style listed for that trip.\n"
+    "- **Fish per hour only uses trips where you fished one method.** A mixed "
+    "day's hours can't be split fairly between methods, so those trips still "
+    "count their fish but are left out of the rate.\n"
+    "- **Thin numbers are marked.** Anything built on only a trip or two shows "
+    "as an 🌱 early signal."
+)
 
 # Okabe-Ito color-blind-safe palette (distinguishable across CVD types).
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
@@ -656,8 +685,19 @@ def _cached_by_month(user_email, year, cache_ver=0):
 # Pages
 # --------------------------------------------------------------------------
 
+def _go_to_log_session():
+    # Runs as a callback, before the sidebar radio is drawn, which is the only
+    # point at which a keyed widget's value may be changed.
+    st.session_state["nav_page"] = "Log a Session"
+
+
 def page_dashboard():
     st.header("🎣 Dashboard")
+    # On a phone the menu hides behind the sidebar arrow; anglers on the water
+    # want to get straight to logging. Not shown on the read-only demo.
+    if not _is_demo():
+        st.button("🎣  Log a Session", type="primary", use_container_width=True,
+                  key="dash_log_btn", on_click=_go_to_log_session)
     user = db.get_current_user()
     ver = _cache_ver()
     stats = _cached_overall_stats(user, ver)
@@ -1082,27 +1122,31 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
             "species": st.column_config.SelectboxColumn(
                 "Species ▾", options=SPECIES, required=False,
                 default=DEFAULT_SPECIES),
-            "length": st.column_config.NumberColumn("Length (in)", min_value=0.0, step=0.5, format="%.1f"),
+            "length": st.column_config.NumberColumn("Length (in)", min_value=0.0, step=0.5, format="%.1f",
+                                                     help="Required: a length or a weight (either one)."),
             "depth": st.column_config.NumberColumn("Depth (ft)", min_value=0.0, step=1.0, format="%.0f",
-                                                    help="Depth at which this fish was caught (optional)"),
-            "weight": st.column_config.NumberColumn("Weight (lb)", min_value=0.0, step=0.1, format="%.2f"),
-            "kept": st.column_config.CheckboxColumn("Kept?", help="Checked = harvested/kept; unchecked = released", default=False),
+                                                    help="Optional. Depth this fish was caught at."),
+            "weight": st.column_config.NumberColumn("Weight (lb)", min_value=0.0, step=0.1, format="%.2f",
+                                                     help="Required: a length or a weight (either one)."),
+            "kept": st.column_config.CheckboxColumn("Kept?", help="Optional. Checked = kept; unchecked = released (used for the DWR report).", default=False),
             "bait_lure": st.column_config.SelectboxColumn(
                 "Bait ▾",
                 options=[SAME_AS_TRIP] + [b for b in dict.fromkeys(
-                    list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
-                    + list(extra_baits or []) + ([trip_bait] if trip_bait else []))],
+                    ([trip_bait] if trip_bait else []) + list(extra_baits or [])
+                    + list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency()))],
                 required=False,
-                help="Defaults to the trip's bait. Change it for a fish that came on "
-                     f"something else, or pick \"{SAME_AS_TRIP}\" to clear it."),
+                help="Optional. Defaults to the first bait you listed. Change it for a fish "
+                     "that came on something else so Analytics credits the right bait, "
+                     f"or pick \"{SAME_AS_TRIP}\" to clear it."),
             "fishing_style": st.column_config.SelectboxColumn(
                 "Style ▾",
                 options=[SAME_AS_TRIP] + [s_ for s_ in dict.fromkeys(
-                    list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
-                    + list(extra_styles or []) + ([trip_style] if trip_style else []))],
+                    ([trip_style] if trip_style else []) + list(extra_styles or [])
+                    + list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency()))],
                 required=False,
-                help="Defaults to the trip's style. Change it for a fish caught a "
-                     f"different way, or pick \"{SAME_AS_TRIP}\" to clear it."),
+                help="Optional. Defaults to the first style you listed. Change it for a fish "
+                     "caught a different way so Analytics credits the right style, "
+                     f"or pick \"{SAME_AS_TRIP}\" to clear it."),
         },
         column_order=["species", "length", "depth", "weight", "kept",
                       "bait_lure", "fishing_style"],
@@ -1210,8 +1254,8 @@ def _extra_methods(key: str) -> tuple:
 
     with st.expander("➕ Add a bait or style that isn't in the list"):
         st.caption(
-            "For something you're using today. Once you log it — as your primary "
-            "method or on any fish — it stays in your list for future trips."
+            "For something you're using today. Once you log it — in today's "
+            "baits and styles or on any fish — it stays in your list for future trips."
         )
         c1, c2, c3 = st.columns([3, 3, 1.4])
         nb = c1.text_input("New bait / lure", key=f"{bait_key}_in")
@@ -1230,6 +1274,23 @@ def _extra_methods(key: str) -> tuple:
 
 def _bulk_key(key: str) -> str:
     return f"{key}_bulk"
+
+
+def _follow_trip_default(widget_key: str, choices: list, default) -> None:
+    """Keep an untouched group dropdown on the trip's current default.
+
+    A keyed selectbox keeps its first value for good, so a group drawn before
+    the angler filled in "Baits used today" stayed on the old default after
+    they changed it. Remember which default each dropdown was given: while it
+    still shows that one (the angler never touched it), move it to the new
+    default. One they changed by hand is left alone.
+    """
+    seen_key = f"{widget_key}__default"
+    current = st.session_state.get(widget_key)
+    if (current is None or current not in choices
+            or current == st.session_state.get(seen_key)):
+        st.session_state[widget_key] = default
+    st.session_state[seen_key] = default
 
 
 def _bulk_fish_section(key: str, trip_bait: str | None = None,
@@ -1260,12 +1321,13 @@ def _bulk_fish_section(key: str, trip_bait: str | None = None,
     n_key = f"{key}_ngroups"
     n = st.session_state.setdefault(n_key, 1)
 
+    # The trip's primary and today's other methods first, then everything else.
     bait_opts = list(dict.fromkeys(
-        list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
-        + list(extra_baits or []) + ([trip_bait] if trip_bait else [])))
+        ([trip_bait] if trip_bait else []) + list(extra_baits or [])
+        + list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())))
     style_opts = list(dict.fromkeys(
-        list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
-        + list(extra_styles or []) + ([trip_style] if trip_style else [])))
+        ([trip_style] if trip_style else []) + list(extra_styles or [])
+        + list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())))
     # No "same as trip" sentinel here: nobody could tell what it meant. The
     # dropdowns simply start on the trip's primary method, which is the same
     # thing said plainly. Picking that value still stores NULL underneath, so
@@ -1301,10 +1363,12 @@ def _bulk_fish_section(key: str, trip_bait: str | None = None,
             kept = c5.checkbox("Kept?", key=f"{key}_g{i}_kept")
 
             c6, c7 = st.columns(2)
-            bait = c6.selectbox("Bait", bait_choices, index=bait_idx,
-                                key=f"{key}_g{i}_bait")
-            style = c7.selectbox("Style", style_choices, index=style_idx,
-                                 key=f"{key}_g{i}_style")
+            _follow_trip_default(f"{key}_g{i}_bait", bait_choices,
+                                 bait_choices[bait_idx])
+            _follow_trip_default(f"{key}_g{i}_style", style_choices,
+                                 style_choices[style_idx])
+            bait = c6.selectbox("Bait", bait_choices, key=f"{key}_g{i}_bait")
+            style = c7.selectbox("Style", style_choices, key=f"{key}_g{i}_style")
 
         if count and int(count) > 0:
             groups.append({
@@ -1550,11 +1614,18 @@ def page_log_session():
         fields_box = st.container()
         method_box = st.container()
         extras_box = st.container()
+        notes_box = st.container()
 
     # Executes before the method dropdowns so a bait added here is selectable
     # immediately, but draws below them.
     with extras_box:
         x_baits, x_styles = _extra_methods("catch_editor")
+
+    # Notes sit in plain view, not in the collapsed temperatures section: they
+    # feed the Journal Notes page, and a box nobody sees is a box nobody fills.
+    with notes_box:
+        notes = st.text_area("Notes", height=100, key="log_notes",
+                             placeholder=NOTES_PLACEHOLDER)
 
     with fields_box:
         c1, c2 = st.columns(2)
@@ -1574,7 +1645,7 @@ def page_log_session():
                 "Anglers", min_value=1, value=1, step=1, key="log_anglers",
                 help="Used for the DWR striper report.")
 
-        with st.expander("More detail (optional)"):
+        with st.expander("Temperatures (optional)"):
             t1, t2 = st.columns(2)
             # Blank by default — don't invent a reading nobody took.
             air_temp = t1.number_input("Air temp (°)", value=None, step=1,
@@ -1583,37 +1654,26 @@ def page_log_session():
             water_temp = t2.number_input("Water temp (°)", value=None, step=1,
                                          format="%d", placeholder="optional",
                                          key="log_water")
-            notes = st.text_area("Notes", height=80, key="log_notes")
 
     with method_box:
-        # ONE bait and ONE style, deliberately: this is the trip's primary
-        # method. It is what the fish rows default to, and on a skunked trip it
-        # is the only record of how the day was fished. It is also the
-        # denominator for success-rate-by-method, which two primaries would
-        # break. Anything else tried goes on the individual fish below.
-        st.markdown("**Primary fishing method used this day**")
         all_baits = list(dict.fromkeys(
             list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
             + list(x_baits)))
         all_styles = list(dict.fromkeys(
             list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
             + list(x_styles)))
+        # Start from what the last trip was fished with.
         last_bait = defaults.get("bait_lure")
         style_default = defaults.get("fishing_style") or "Downlines"
-        m1, m2 = st.columns(2)
-        bait_choice = m1.selectbox(
-            "Bait / lure", all_baits,
-            index=all_baits.index(last_bait) if last_bait in all_baits else 0,
-            key="log_bait")
-        fishing_style = m2.selectbox(
-            "Style of fishing", all_styles,
-            index=all_styles.index(style_default) if style_default in all_styles else 0,
-            key="log_style")
-        st.caption("Any other techniques used today can be added individually "
-                   "as you log each fish.")
+        bait_choice, fishing_style, other_baits, other_styles = _methods_used_inputs(
+            "log", all_baits, all_styles,
+            [last_bait] if last_bait else [], [style_default])
 
     trip_bait = bait_choice or None
     trip_style = fishing_style or None
+    # Today's methods go to the top of the per-fish dropdowns.
+    x_baits = list(dict.fromkeys(list(other_baits) + list(x_baits)))
+    x_styles = list(dict.fromkeys(list(other_styles) + list(x_styles)))
 
     # ---------------- 2. Where you fished ------------------------------
     with sec_where:
@@ -1633,15 +1693,18 @@ def page_log_session():
         st.markdown("**Fish you measured** — one row each")
         st.caption("Type a length (or weight) to add a fish. Use the empty row "
                    "below it to add another.")
+        st.caption(CATCH_REQUIRED_NOTE)
         catch_editor = _fish_editor(_blank_fish_df(), key="catch_editor",
                                     defer_rerun=save, skip_starter=True,
                                     trip_bait=trip_bait, trip_style=trip_style,
                                     extra_baits=x_baits, extra_styles=x_styles)
+        st.caption(CATCH_METHOD_NOTE)
 
         st.markdown("**Fish you counted but didn't measure**")
         st.caption("How many, and the sizes you saw. Smallest and largest are "
                    "both optional; fill in either one or both. Recorded as a "
                    "range, never turned into individual lengths.")
+        st.caption(BULK_GROUPS_NOTE)
         bulk_groups = _bulk_fish_section("catch_editor",
                                          trip_bait=trip_bait, trip_style=trip_style,
                                          extra_baits=x_baits, extra_styles=x_styles)
@@ -1683,6 +1746,7 @@ def page_log_session():
             "location_name": location_name, "weather": weather,
             "air_temp": air_temp, "water_temp": water_temp,
             "bait_lure": bait_choice, "fishing_style": fishing_style,
+            "other_baits": other_baits, "other_styles": other_styles,
             "num_anglers": num_anglers, "notes": notes,
             "location_notes": location_notes,
         }
@@ -1729,6 +1793,49 @@ def page_log_session():
 # "saved" state, so the Save button never changed and it looked like nothing
 # had happened.
 _KEEP_AFTER_SAVE = {"log_saved_msg"}
+
+
+def _methods_used_inputs(prefix: str, all_baits: list, all_styles: list,
+                         default_baits: list, default_styles: list) -> tuple:
+    """"Baits used today" / "Styles used today": pick as many as you like.
+
+    Returns (bait, style, other_baits, other_styles). The FIRST pick of each is
+    stored as the trip's bait_lure / fishing_style: it is what every fish
+    defaults to, and what a fish left alone is credited to. The rest go to
+    other_baits / other_styles (migrations/007), so the storage and analytics
+    are unchanged from the "primary + others" form this replaced.
+
+    Before migration 007 there is nowhere to keep a second pick, so this falls
+    back to one dropdown each rather than offering choices it would drop.
+    """
+    if not db.has_other_methods_columns():
+        st.markdown("**Fishing method used this day**")
+        m1, m2 = st.columns(2)
+        b0 = default_baits[0] if default_baits else None
+        s0 = default_styles[0] if default_styles else None
+        bait = m1.selectbox("Bait / lure", all_baits,
+                            index=all_baits.index(b0) if b0 in all_baits else 0,
+                            key=f"{prefix}_bait")
+        style = m2.selectbox("Style of fishing", all_styles,
+                             index=all_styles.index(s0) if s0 in all_styles else 0,
+                             key=f"{prefix}_style")
+        st.caption("Any other techniques used today can be set on individual fish.")
+        return bait, style, [], []
+
+    m1, m2 = st.columns(2)
+    baits = m1.multiselect(
+        "Baits used today", all_baits,
+        default=[b for b in default_baits if b in all_baits],
+        key=f"{prefix}_baits", placeholder="Pick as many as you used")
+    styles = m2.multiselect(
+        "Styles used today", all_styles,
+        default=[s_ for s_ in default_styles if s_ in all_styles],
+        key=f"{prefix}_styles", placeholder="Pick as many as you used")
+    st.caption("List everything you fished today, even what caught nothing. "
+               "Each fish below starts on the **first** bait and style you "
+               "picked; change it on the fish if it came on something else.")
+    return ((baits[0] if baits else None), (styles[0] if styles else None),
+            baits[1:], styles[1:])
 
 
 def _reset_entry_fields(prefix: str) -> None:
@@ -1960,8 +2067,12 @@ def _render_session_detail(detail: dict, sid: int):
         if _air or _wat:
             st.write(f"**Air / Water:** {_air + '°' if _air else '—'} / "
                      f"{_wat + '°' if _wat else '—'}")
-        st.write(f"**Bait/Lure:** {_plain(detail.get('bait_lure'))}")
-        st.write(f"**Style:** {detail.get('fishing_style') or 'n/a'}")
+        _baits = ([detail["bait_lure"]] if detail.get("bait_lure") else []) + \
+            data_entry.parse_methods(detail.get("other_baits"))
+        _styles = ([detail["fishing_style"]] if detail.get("fishing_style") else []) + \
+            data_entry.parse_methods(detail.get("other_styles"))
+        st.write(f"**Baits used:** {_plain(', '.join(_baits)) or 'n/a'}")
+        st.write(f"**Styles used:** {_plain(', '.join(_styles)) or 'n/a'}")
         st.write(f"**Anglers:** {detail.get('num_anglers') or 1}")
         st.write(f"**Total fish:** {detail['total_fish']}")
         if detail.get("moon_phase"):
@@ -1971,7 +2082,24 @@ def _render_session_detail(detail: dict, sid: int):
         fish_df = fish_df.rename(columns={
             "species": "Species", "length": "Length (in)", "weight": "Weight (lb)",
             "kept": "Kept?", "depth": "Depth (ft)",
+            "len_min": "Smallest (in)", "len_max": "Largest (in)",
+            "bait_lure": "Bait", "fishing_style": "Style",
         })
+        # A size range only exists on counted groups; hide the columns when no
+        # fish has one, and show blanks rather than None/nan where absent.
+        for _c in ("Smallest (in)", "Largest (in)"):
+            if _c in fish_df.columns:
+                if fish_df[_c].isna().all():
+                    fish_df = fish_df.drop(columns=[_c])
+                else:
+                    fish_df[_c] = fish_df[_c].apply(
+                        lambda x: "" if x is None or x != x else _fmt_temp(x))
+        # Per-fish method: blank means "same as the trip's primary".
+        for _c, _trip in (("Bait", detail.get("bait_lure")),
+                          ("Style", detail.get("fishing_style"))):
+            if _c in fish_df.columns:
+                fish_df[_c] = fish_df[_c].apply(
+                    lambda x, t=_trip: x if x and x == x else (t or ""))
         fish_df["Kept?"] = fish_df["Kept?"].apply(lambda x: "✓" if x else "")
         fish_df["Length (in)"] = fish_df["Length (in)"].apply(
             lambda x: "" if not x else (str(int(x)) if float(x) == int(float(x)) else str(x))
@@ -2133,9 +2261,14 @@ def _edit_form(detail: dict):
         fields_box = st.container()
         method_box = st.container()
         extras_box = st.container()
+        notes_box = st.container()
 
     with extras_box:
         x_baits_e, x_styles_e = _extra_methods(f"e_fish_{sid}")
+
+    with notes_box:
+        notes = st.text_area("Notes", value=detail.get("notes") or "", height=100,
+                             key=f"e_notes_{sid}", placeholder=NOTES_PLACEHOLDER)
 
     with fields_box:
         c1, c2 = st.columns(2)
@@ -2162,7 +2295,7 @@ def _edit_form(detail: dict):
                 "Anglers", min_value=1, step=1,
                 value=int(detail.get("num_anglers") or 1), key=f"e_anglers_{sid}")
 
-        with st.expander("More detail (optional)"):
+        with st.expander("Temperatures (optional)"):
             t1, t2 = st.columns(2)
             # Keep an existing reading; otherwise blank (don't invent 70/60).
             air_temp = t1.number_input(
@@ -2173,26 +2306,21 @@ def _edit_form(detail: dict):
                 "Water temp (°)",
                 value=int(float(detail["water_temp"])) if detail.get("water_temp") is not None else None,
                 step=1, format="%d", key=f"e_water_{sid}", placeholder="optional")
-            notes = st.text_area("Notes", value=detail.get("notes") or "",
-                                 key=f"e_notes_{sid}")
 
     with method_box:
-        st.markdown("**Primary fishing method used this day**")
-        all_b = list(dict.fromkeys(edit_all_baits + list(x_baits_e)
-                                   + ([existing_bait] if existing_bait else [])))
-        all_s = list(dict.fromkeys(edit_all_styles + list(x_styles_e)
-                                   + ([existing_style] if existing_style else [])))
-        m1, m2 = st.columns(2)
-        bait_choice_e = m1.selectbox("Bait / lure", all_b,
-                                     index=_idx(all_b, existing_bait),
-                                     key=f"e_bait_{sid}")
-        fishing_style_e = m2.selectbox("Style of fishing", all_s,
-                                       index=_idx(all_s, existing_style),
-                                       key=f"e_style_{sid}")
-        st.caption("Any other techniques used that day can be set on individual fish.")
+        used_b = ([existing_bait] if existing_bait else []) + \
+            data_entry.parse_methods(detail.get("other_baits"))
+        used_s = ([existing_style] if existing_style else []) + \
+            data_entry.parse_methods(detail.get("other_styles"))
+        all_b = list(dict.fromkeys(edit_all_baits + list(x_baits_e) + used_b))
+        all_s = list(dict.fromkeys(edit_all_styles + list(x_styles_e) + used_s))
+        bait_choice_e, fishing_style_e, other_baits_e, other_styles_e = \
+            _methods_used_inputs(f"e_{sid}", all_b, all_s, used_b, used_s)
 
     trip_bait_e = bait_choice_e or None
     trip_style_e = fishing_style_e or None
+    x_baits_e = list(dict.fromkeys(list(other_baits_e) + list(x_baits_e)))
+    x_styles_e = list(dict.fromkeys(list(other_styles_e) + list(x_styles_e)))
 
     # ---------------- 2. Where you fished ------------------------------
     with sec_where:
@@ -2209,12 +2337,15 @@ def _edit_form(detail: dict):
     with sec_catch:
         st.subheader("3 · What you caught")
         st.markdown("**Fish you measured** — one row each")
+        st.caption(CATCH_REQUIRED_NOTE)
         catch_editor = _fish_editor(existing, key=f"e_fish_{sid}", defer_rerun=saved,
                                     skip_starter=edit_starter,
                                     trip_bait=trip_bait_e, trip_style=trip_style_e,
                                     extra_baits=x_baits_e, extra_styles=x_styles_e)
+        st.caption(CATCH_METHOD_NOTE)
 
         st.markdown("**Fish you counted but didn't measure**")
+        st.caption(BULK_GROUPS_NOTE)
         bulk_groups = _bulk_fish_section(f"e_fish_{sid}",
                                          trip_bait=trip_bait_e, trip_style=trip_style_e,
                                          extra_baits=x_baits_e, extra_styles=x_styles_e)
@@ -2243,6 +2374,7 @@ def _edit_form(detail: dict):
             "weather": weather, "air_temp": air_temp, "water_temp": water_temp,
             "bait_lure": bait_choice_e,
             "fishing_style": fishing_style_e,
+            "other_baits": other_baits_e, "other_styles": other_styles_e,
             "num_anglers": num_anglers, "notes": notes,
             # Preserve filed status — without this, validate_session defaults it
             # to 0 and every edit would silently un-file the DWR report.
@@ -2289,36 +2421,38 @@ def _render_whats_working():
         st.caption("Not enough repeat data yet — a condition needs at least two "
                    "trips (with hours recorded) before it can rank here. Keep logging!")
 
-    # Per-fish attribution. The tables below are per-TRIP: they credit every
-    # fish on an outing to the one method recorded for it, which is wrong on
-    # exactly the days two techniques were used at once. This section counts
-    # each fish against the method that actually caught it.
+    # Bait and style are credited per FISH (each fish's own method, else the
+    # trip's primary). They used to also appear below as per-trip tables that
+    # credited every fish to the primary, which disagreed with these on every
+    # mixed day; both now come from the same rule, so they are shown once.
     for _title, _dim in (("What actually caught them — by bait",  "bait_lure"),
                          ("What actually caught them — by style", "fishing_style")):
         _tbl = analytics.by_method(_dim)
         if _tbl is None or _tbl.empty:
             continue
         st.subheader(_title)
+        _label = _title.split("— by ")[-1].title()
         _show = _tbl.rename(columns={
-            _dim: _title.split("— by ")[-1].title(),
-            "total_fish": "fish", "trips": "trips",
+            _dim: _label, "total_fish": "fish", "trips": "trips used",
+            "trips_with_fish": "trips it caught on",
             "fish_per_hour": "fish/hr", "rate_trips": "rate from",
         })
-        st.dataframe(_show, hide_index=True, width="stretch")
+        st.dataframe(_show[[_label, "fish", "trips used", "trips it caught on",
+                            "fish/hr", "rate from"]],
+                     hide_index=True, width="stretch")
         st.caption(
-            "**fish** counts every fish, credited to the method that caught it. "
-            "**fish/hr** is calculated only from trips where you used that one "
-            "method — on a trip running two techniques at once there is no way to "
-            "know how the hours divided, so the rate is left out rather than "
-            "guessed. **rate from** is how many trips fed that rate."
+            "**fish** counts every fish, credited to the bait or style you set on "
+            "it (or the trip's first-listed one if you left it). **trips used** includes "
+            "trips where it caught nothing. **fish/hr** comes only from trips "
+            "where you used that one method; a mixed day's hours can't be split "
+            "fairly, so they're left out rather than guessed. **rate from** is "
+            "how many trips fed that rate."
         )
 
     sections = [
         ("Water temperature", analytics.by_water_temp(), "water_band"),
         ("Weather", analytics.by_weather(), "weather"),
         ("Time of day", analytics.by_time_of_day(), "tod"),
-        ("Fishing style", analytics.by_fishing_style(), "fishing_style"),
-        ("Bait / lure", analytics.by_bait(), "bait_lure"),
         ("Moon phase", analytics.by_moon_phase(), "moon_phase"),
     ]
     for title, tbl, col in sections:
@@ -2467,6 +2601,9 @@ def page_analytics():
     if analytics.overall_stats()["sessions"] == 0:
         st.info("No data yet.")
         return
+
+    with st.expander("ℹ️ How these numbers work"):
+        st.markdown(ANALYTICS_EXPLAINER)
 
     years = analytics.available_years()
     year = st.selectbox("Year", years, index=0) if years else None
@@ -2788,6 +2925,10 @@ _CAL_CSS = """
 .fc-legend{display:flex;gap:18px;margin-top:10px;font-size:12px;color:#666;align-items:center;}
 .leg-box{width:13px;height:13px;border:1px solid #ccc;display:inline-block;margin-right:4px;vertical-align:middle;border-radius:2px;}
 .leg-c{background:#e8f5e9;}.leg-s{background:#b8b8b8;}.leg-n{background:#fff;}
+.fc-table td[data-sid]{cursor:pointer;}
+.fc-table td[data-sid]:hover{outline:2px solid #0072B2;outline-offset:-2px;}
+.fc-table td.picked{outline:3px solid #0072B2;outline-offset:-3px;}
+.fc-hint{font-size:12px;color:#666;margin-top:6px;}
 
 /* Phone-only: compress the grid so a full month fits without side-scrolling */
 @media (max-width: 640px) {
@@ -2805,8 +2946,13 @@ _CAL_CSS = """
 </style>
 """
 
-def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> str:
-    """sessions: {day: [{session_id, total_fish, location, moon_phase}, ...]}"""
+def _build_calendar_html(year: int, month: int, sessions: dict, today: date,
+                         picked: int | None = None, with_css: bool = True) -> str:
+    """sessions: {day: [{session_id, total_fish, location, moon_phase}, ...]}
+
+    Trip days carry data-sid (the day's first trip) so the clickable calendar
+    can open that trip; ``picked`` outlines the open one.
+    """
     weeks = _cal.Calendar(firstweekday=6).monthdayscalendar(year, month)
     DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
     rows = "<tr>" + "".join(f"<th>{d}</th>" for d in DOW) + "</tr>"
@@ -2823,7 +2969,14 @@ def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> 
             cls = "today-cell " if is_today else ""
             if day_sessions:
                 cls += "caught" if total_fish > 0 else "skunked"
-            rows += f'<td class="{cls}">'
+                sids = [s_["session_id"] for s_ in day_sessions]
+                if picked in sids:
+                    cls += " picked"
+                rows += (f'<td class="{cls}" data-sid="{sids[0]}" role="button" '
+                         f'tabindex="0" aria-label="Open the {_cal.month_name[month]} '
+                         f'{day} trip">')
+            else:
+                rows += f'<td class="{cls}">'
             # Moon from first session of the day
             moon = day_sessions[0]["moon_phase"] if day_sessions else ""
             if moon:
@@ -2853,12 +3006,66 @@ def _build_calendar_html(year: int, month: int, sessions: dict, today: date) -> 
         '</div>'
     )
     return (
-        _CAL_CSS
+        (_CAL_CSS if with_css else "")
         + '<div class="fc-wrap">'
         + f'<table class="fc-table">{rows}</table>'
         + legend
+        + '<div class="fc-hint">Tap a trip day to open it.</div>'
         + "</div>"
     )
+
+
+# Clickable calendar. A Custom Component v2: it renders straight into the page
+# (no iframe), so the grid looks exactly like the static one, and a tap on a
+# trip day comes back to Python as a one-run "picked" trigger. Links were the
+# other option, but a link reloads the page, which starts a new Streamlit
+# session and drops a demo visitor's sign-in and the page they were on.
+_CAL_JS = """
+export default function (component) {
+  const { data, parentElement, setTriggerValue } = component
+  const root = parentElement.querySelector("#fc-root")
+  if (!root) return
+  if (root.dataset.html !== data.html) {
+    root.innerHTML = data.html
+    root.dataset.html = data.html
+  }
+  const pick = (cell) => {
+    if (cell && cell.dataset.sid) setTriggerValue("picked", Number(cell.dataset.sid))
+  }
+  root.onclick = (e) => pick(e.target.closest("td[data-sid]"))
+  root.onkeydown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      pick(e.target.closest("td[data-sid]"))
+    }
+  }
+}
+"""
+
+try:
+    _CAL_COMPONENT = st.components.v2.component(
+        "fishing_log_calendar",
+        html="""
+<div id="fc-root"></div>
+""",
+        css=_CAL_CSS.replace("<style>", "").replace("</style>", ""),
+        js=_CAL_JS,
+    )
+except Exception:  # pragma: no cover - older Streamlit without CCv2
+    _CAL_COMPONENT = None
+
+
+def _clickable_calendar(year: int, month: int, sessions: dict, today: date,
+                        picked: int | None):
+    """Draw the month; return the trip id tapped this run, or None."""
+    if _CAL_COMPONENT is None:
+        st.markdown(_build_calendar_html(year, month, sessions, today, picked),
+                    unsafe_allow_html=True)
+        return None
+    html = _build_calendar_html(year, month, sessions, today, picked, with_css=False)
+    result = _CAL_COMPONENT(data={"html": html}, key=f"cal_grid_{year}_{month}",
+                            on_picked_change=lambda: None)
+    return getattr(result, "picked", None)
 
 
 def page_calendar():
@@ -2901,12 +3108,28 @@ def page_calendar():
         st.rerun()
 
     sessions = search.calendar_month(yr, mo)
-    st.markdown(_build_calendar_html(yr, mo, sessions, today), unsafe_allow_html=True)
+    tapped = _clickable_calendar(yr, mo, sessions, today,
+                                 st.session_state.get("cal_sel_sid"))
+    if tapped:
+        # Tapping the open trip again closes it, like its View/Close button.
+        st.session_state.cal_sel_sid = (
+            None if st.session_state.get("cal_sel_sid") == tapped else int(tapped))
 
-    # Clickable session list below the calendar
+    # The tapped trip opens right under the calendar, where the eye already is.
+    sel_sid = st.session_state.get("cal_sel_sid")
+    if sel_sid:
+        detail = search.get_session(sel_sid)
+        if detail:
+            with st.container(border=True):
+                if st.button("▲ Close this trip", key="cal_close_top"):
+                    st.session_state.cal_sel_sid = None
+                    st.rerun()
+                _render_session_detail(detail, sel_sid)
+
+    # Session list below the calendar (also reaches 2nd trips on a busy day)
     if sessions:
         st.markdown("---")
-        st.markdown("**Trips this month** — click a row to read the full session detail.")
+        st.markdown("**Trips this month** — tap a day above, or a row here.")
         sel = st.session_state.get("cal_sel_sid")
         for day in sorted(sessions.keys()):
             for s in sessions[day]:
@@ -2921,12 +3144,111 @@ def page_calendar():
                     st.session_state.cal_sel_sid = None if sel == sid else sid
                     st.rerun()
 
-        sel_sid = st.session_state.get("cal_sel_sid")
-        if sel_sid:
-            detail = search.get_session(sel_sid)
-            if detail:
-                st.markdown("---")
-                _render_session_detail(detail, sel_sid)
+
+# Journal Notes quick ranges. "Same month last year" is the season-to-season
+# comparison: read last October's notes while this October is happening.
+_JOURNAL_RANGES = ["This month", "Last 3 months", "This season",
+                   "Same month last year", "Pick dates"]
+
+
+def _journal_range(choice: str, today: date) -> tuple:
+    """(date_from, date_to) for a Journal Notes quick-range choice."""
+    if choice == "This month":
+        return today.replace(day=1), today
+    if choice == "Last 3 months":
+        m, y = today.month - 2, today.year
+        if m < 1:
+            m, y = m + 12, y - 1
+        return date(y, m, 1), today
+    if choice == "Same month last year":
+        y = today.year - 1
+        return date(y, today.month, 1), date(y, today.month,
+                                             _cal.monthrange(y, today.month)[1])
+    # "This season" (and the starting point for "Pick dates")
+    return date(today.year, 1, 1), today
+
+
+def _journal_note_md(note: str) -> str:
+    """A note made safe for Markdown, with the angler's line breaks kept."""
+    return "  \n".join(_plain(line) for line in note.splitlines())
+
+
+def page_journal():
+    st.header("📓 Journal Notes")
+    st.caption("Your trip notes, one after another, like an old paper fishing "
+               "journal. Read a stretch of the season straight through to see "
+               "when things started changing. Open a trip for the full detail.")
+    today = date.today()
+
+    choice = st.radio("Show", _JOURNAL_RANGES, horizontal=True,
+                      key="journal_range", label_visibility="collapsed")
+    date_from, date_to = _journal_range(choice, today)
+    if choice == "Pick dates":
+        c1, c2 = st.columns(2)
+        date_from = c1.date_input("Notes from", value=date_from, key="journal_from")
+        date_to = c2.date_input("Notes until", value=date_to, key="journal_to")
+
+    c1, c2, c3 = st.columns([3, 1.3, 1.7])
+    word = c1.text_input("Search your notes", key="journal_word",
+                         placeholder="e.g. gulls, shad, bait pods")
+    oldest_first = c2.toggle("Oldest first", key="journal_oldest",
+                             help="Oldest first reads like the story of the season.")
+    show_empty = c3.toggle("Show trips without notes", key="journal_empty")
+
+    entries = search.journal_entries(date_from, date_to, word=word,
+                                     only_with_notes=not show_empty,
+                                     oldest_first=oldest_first)
+
+    span = (f"{date_from:%b} {date_from.day}, {date_from.year} – "
+            f"{date_to:%b} {date_to.day}, {date_to.year}")
+    if not entries:
+        if word and word.strip():
+            st.info(f"No notes mention “{word.strip()}” between {span}.")
+        else:
+            st.info(f"No trip notes between {span}. Notes you write on "
+                    "**Log a Session** show up here.")
+        return
+
+    st.caption(f"{len(entries)} trip(s) · {span}")
+
+    text_lines = []
+    sel = st.session_state.get("journal_sel_sid")
+    for e in entries:
+        d = datetime.strptime(e["date"], "%Y-%m-%d").date()
+        nice_date = f"{d:%a %b} {d.day}, {d.year}"
+        fish = (f"🐟 {e['total_fish']} fish" if e["total_fish"]
+                else "🦨 skunked")
+        water = _fmt_temp(e["water_temp"])
+        header = f"**{nice_date}**  ·  {fish}" + (f"  ·  water {water}°" if water else "")
+
+        with st.container(border=True):
+            h1, h2 = st.columns([5, 1])
+            h1.markdown(header)
+            label = "▲ Close" if sel == e["id"] else "View trip →"
+            if h2.button(label, key=f"journal_view_{e['id']}"):
+                st.session_state["journal_sel_sid"] = None if sel == e["id"] else e["id"]
+                st.rerun()
+            if e["notes"]:
+                st.markdown(_journal_note_md(e["notes"]))
+            else:
+                st.caption("No notes for this trip.")
+            if sel == e["id"]:
+                detail = search.get_session(e["id"])
+                if detail:
+                    st.divider()
+                    _render_session_detail(detail, e["id"])
+
+        text_lines += [f"{nice_date} - " + (f"{e['total_fish']} fish" if e["total_fish"]
+                                            else "skunked")
+                       + (f" - water {water}°" if water else ""),
+                       e["notes"] or "(no notes)", ""]
+
+    st.download_button(
+        "⬇️ Download these notes (text file)",
+        data="\n".join(text_lines).encode("utf-8"),
+        file_name=f"journal_notes_{date_from}_{date_to}.txt",
+        mime="text/plain",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2993,10 +3315,13 @@ def main():
     elif st.session_state.get("demo_admin_toggle"):
         st.warning("🛠 **Demo admin mode** — changes here are live for all demo viewers.", icon="🛠️")
 
+    # Keyed so a page button (e.g. the Dashboard's "Log a Session") can switch
+    # pages by setting this key in a callback, and the menu stays in step.
     page = st.sidebar.radio(
         "Navigate",
-        ["Dashboard", "Log a Session", "Browse & Search", "Analytics",
-         "Calendar", "Map", "Export", "Privacy & Data"],
+        ["Dashboard", "Log a Session", "Browse & Search", "Journal Notes",
+         "Analytics", "Calendar", "Map", "Export", "Privacy & Data"],
+        key="nav_page",
     )
 
     # Leaving a page ends whatever was on it. Without this, saving a trip and
@@ -3048,6 +3373,7 @@ def main():
         "Dashboard": page_dashboard,
         "Log a Session": page_log_session,
         "Browse & Search": page_browse,
+        "Journal Notes": page_journal,
         "Analytics": page_analytics,
         "Calendar": page_calendar,
         "Map": page_map,

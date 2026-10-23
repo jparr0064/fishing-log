@@ -68,6 +68,9 @@ def _sessions_df() -> pd.DataFrame:
     # location_notes only exists after migration 006; same treatment.
     if db.has_location_notes_column():
         uuid_col += ", location_notes"
+    # other_baits / other_styles only exist after migration 007.
+    if db.has_other_methods_columns():
+        uuid_col += ", other_baits, other_styles"
     q = text(f"""
         SELECT id AS session_id, date, start_time, end_time, hours_fished,
                location_name, latitude, longitude, weather, air_temp,
@@ -80,21 +83,34 @@ def _sessions_df() -> pd.DataFrame:
         df = pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
     if "trip_uuid" not in df.columns:
         df["trip_uuid"] = None
-    if "location_notes" not in df.columns:
-        df["location_notes"] = None
+    for col in ("location_notes", "other_baits", "other_styles"):
+        if col not in df.columns:
+            df[col] = None
     return df
 
 
+# Optional fish columns (migrations 004/005). Exported when present so a
+# restore keeps each fish's own bait/style and observed size range; without
+# them every restored fish fell back to the trip's primary method.
+_FISH_OPTIONAL = ("len_min", "len_max", "bait_lure", "fishing_style")
+
+
 def _fish_df() -> pd.DataFrame:
-    q = text("""
-        SELECT f.id AS fish_id, f.session_id, s.date, s.location_name,
-               f.species, f.length, f.weight, f.kept, f.depth
-        FROM fish f JOIN sessions s ON s.id = f.session_id
-        WHERE s.user_email = :email
-        ORDER BY f.session_id, f.id
-    """)
     with db.read_connection() as conn:
-        return pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
+        present = db.fish_optional_columns(conn)
+        extra = "".join(f", f.{c}" for c in _FISH_OPTIONAL if c in present)
+        q = text(f"""
+            SELECT f.id AS fish_id, f.session_id, s.date, s.location_name,
+                   f.species, f.length, f.weight, f.kept, f.depth{extra}
+            FROM fish f JOIN sessions s ON s.id = f.session_id
+            WHERE s.user_email = :email
+            ORDER BY f.session_id, f.id
+        """)
+        df = pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
+    for c in _FISH_OPTIONAL:
+        if c not in df.columns:
+            df[c] = None
+    return df
 
 
 def _spots_df() -> pd.DataFrame:
@@ -144,6 +160,10 @@ def export_backup(
             "weight": None if pd.isna(r.weight) else float(r.weight),
             "kept": bool(r.kept),
             "depth": None if pd.isna(r.depth) else float(r.depth),
+            "len_min": None if pd.isna(r.len_min) else float(r.len_min),
+            "len_max": None if pd.isna(r.len_max) else float(r.len_max),
+            "bait_lure": _s(r.bait_lure),
+            "fishing_style": _s(r.fishing_style),
         })
     by_sid_spots: dict = {}
     for r in spots.itertuples():
@@ -177,6 +197,8 @@ def export_backup(
             "dwr_filed_at": _s(r.dwr_filed_at),
             "notes": _s(r.notes),
             "location_notes": _s(r.location_notes),
+            "other_baits": _s(r.other_baits),
+            "other_styles": _s(r.other_styles),
             "moon_phase": _s(r.moon_phase),
             "fish": by_sid_fish.get(sid, []),
             "spots": by_sid_spots.get(sid, []),
@@ -394,7 +416,7 @@ _SESSION_KEYS = (
     "date", "start_time", "end_time", "hours_fished", "location_name",
     "latitude", "longitude", "weather", "air_temp", "water_temp",
     "bait_lure", "fishing_style", "num_anglers", "dwr_filed",
-    "notes", "moon_phase", "location_notes",
+    "notes", "moon_phase", "location_notes", "other_baits", "other_styles",
 )
 
 

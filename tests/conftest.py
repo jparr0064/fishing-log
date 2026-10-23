@@ -23,7 +23,7 @@ def _clear_caches():
     Three separate caches have to go, and missing any one produces a failure
     that only appears when tests run in sequence:
 
-    * analytics' two base frames, keyed by (user_email, cache_version)
+    * analytics' three base frames, keyed by (user_email, cache_version)
     * app.py's @st.cache_data page wrappers, keyed the same way — a test that
       renders an empty account for a given email poisons the next test that
       uses that email against a freshly seeded database
@@ -38,6 +38,7 @@ def _clear_caches():
     def _clear():
         analytics._session_frame_cached.clear()
         analytics._fish_frame_cached.clear()
+        analytics._fish_method_cached.clear()
         db._trip_uuid_support.clear()
         db._session_columns_cache.clear()
         db._fish_columns_cache.clear()
