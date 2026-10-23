@@ -61,7 +61,7 @@ NOTES_PLACEHOLDER = ("What did you see? Bait, birds, where the fish were, "
 CATCH_REQUIRED_NOTE = ("**Required:** species and a length *or* weight. "
                        "Everything else (depth, kept, bait, style) is optional.")
 CATCH_METHOD_NOTE = ("Bait and Style per fish are optional. Leave them as they are "
-                     "and we'll assume your primary bait and style. Change them when "
+                     "and we'll assume the first bait and style you listed. Change them when "
                      "a fish came on something else, and Analytics can show what "
                      "actually caught your fish.")
 BULK_GROUPS_NOTE = "Caught them different ways? Add a group for each bait or style."
@@ -72,7 +72,7 @@ ANALYTICS_EXPLAINER = (
     "per-fish details all feed these numbers.\n"
     "- **Bait and style are credited fish by fish.** Each fish counts toward the "
     "bait and style you set on it. If you left those as they were, it counts "
-    "toward that trip's primary bait and style.\n"
+    "toward the first bait and style listed for that trip.\n"
     "- **Fish per hour only uses trips where you fished one method.** A mixed "
     "day's hours can't be split fairly between methods, so those trips still "
     "count their fish but are left out of the rate.\n"
@@ -685,8 +685,19 @@ def _cached_by_month(user_email, year, cache_ver=0):
 # Pages
 # --------------------------------------------------------------------------
 
+def _go_to_log_session():
+    # Runs as a callback, before the sidebar radio is drawn, which is the only
+    # point at which a keyed widget's value may be changed.
+    st.session_state["nav_page"] = "Log a Session"
+
+
 def page_dashboard():
     st.header("🎣 Dashboard")
+    # On a phone the menu hides behind the sidebar arrow; anglers on the water
+    # want to get straight to logging. Not shown on the read-only demo.
+    if not _is_demo():
+        st.button("🎣  Log a Session", type="primary", use_container_width=True,
+                  key="dash_log_btn", on_click=_go_to_log_session)
     user = db.get_current_user()
     ver = _cache_ver()
     stats = _cached_overall_stats(user, ver)
@@ -1124,7 +1135,7 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
                     ([trip_bait] if trip_bait else []) + list(extra_baits or [])
                     + list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency()))],
                 required=False,
-                help="Optional. Defaults to the trip's primary bait. Change it for a fish "
+                help="Optional. Defaults to the first bait you listed. Change it for a fish "
                      "that came on something else so Analytics credits the right bait, "
                      f"or pick \"{SAME_AS_TRIP}\" to clear it."),
             "fishing_style": st.column_config.SelectboxColumn(
@@ -1133,7 +1144,7 @@ def _fish_editor(df: pd.DataFrame, key: str, defer_rerun: bool = False,
                     ([trip_style] if trip_style else []) + list(extra_styles or [])
                     + list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency()))],
                 required=False,
-                help="Optional. Defaults to the trip's primary style. Change it for a fish "
+                help="Optional. Defaults to the first style you listed. Change it for a fish "
                      "caught a different way so Analytics credits the right style, "
                      f"or pick \"{SAME_AS_TRIP}\" to clear it."),
         },
@@ -1243,8 +1254,8 @@ def _extra_methods(key: str) -> tuple:
 
     with st.expander("➕ Add a bait or style that isn't in the list"):
         st.caption(
-            "For something you're using today. Once you log it — as your primary "
-            "method or on any fish — it stays in your list for future trips."
+            "For something you're using today. Once you log it — in today's "
+            "baits and styles or on any fish — it stays in your list for future trips."
         )
         c1, c2, c3 = st.columns([3, 3, 1.4])
         nb = c1.text_input("New bait / lure", key=f"{bait_key}_in")
@@ -1263,6 +1274,23 @@ def _extra_methods(key: str) -> tuple:
 
 def _bulk_key(key: str) -> str:
     return f"{key}_bulk"
+
+
+def _follow_trip_default(widget_key: str, choices: list, default) -> None:
+    """Keep an untouched group dropdown on the trip's current default.
+
+    A keyed selectbox keeps its first value for good, so a group drawn before
+    the angler filled in "Baits used today" stayed on the old default after
+    they changed it. Remember which default each dropdown was given: while it
+    still shows that one (the angler never touched it), move it to the new
+    default. One they changed by hand is left alone.
+    """
+    seen_key = f"{widget_key}__default"
+    current = st.session_state.get(widget_key)
+    if (current is None or current not in choices
+            or current == st.session_state.get(seen_key)):
+        st.session_state[widget_key] = default
+    st.session_state[seen_key] = default
 
 
 def _bulk_fish_section(key: str, trip_bait: str | None = None,
@@ -1335,10 +1363,12 @@ def _bulk_fish_section(key: str, trip_bait: str | None = None,
             kept = c5.checkbox("Kept?", key=f"{key}_g{i}_kept")
 
             c6, c7 = st.columns(2)
-            bait = c6.selectbox("Bait", bait_choices, index=bait_idx,
-                                key=f"{key}_g{i}_bait")
-            style = c7.selectbox("Style", style_choices, index=style_idx,
-                                 key=f"{key}_g{i}_style")
+            _follow_trip_default(f"{key}_g{i}_bait", bait_choices,
+                                 bait_choices[bait_idx])
+            _follow_trip_default(f"{key}_g{i}_style", style_choices,
+                                 style_choices[style_idx])
+            bait = c6.selectbox("Bait", bait_choices, key=f"{key}_g{i}_bait")
+            style = c7.selectbox("Style", style_choices, key=f"{key}_g{i}_style")
 
         if count and int(count) > 0:
             groups.append({
@@ -1626,31 +1656,18 @@ def page_log_session():
                                          key="log_water")
 
     with method_box:
-        # ONE bait and ONE style, deliberately: this is the trip's primary
-        # method. It is what the fish rows default to, and on a skunked trip it
-        # is the only record of how the day was fished. It is also the
-        # denominator for success-rate-by-method, which two primaries would
-        # break. Anything else tried goes on the individual fish below.
-        st.markdown("**Primary fishing method used this day**")
         all_baits = list(dict.fromkeys(
             list(data_entry.BAIT_LURE_OPTIONS) + list(search.baits_by_frequency())
             + list(x_baits)))
         all_styles = list(dict.fromkeys(
             list(data_entry.FISHING_STYLES) + list(search.styles_by_frequency())
             + list(x_styles)))
+        # Start from what the last trip was fished with.
         last_bait = defaults.get("bait_lure")
         style_default = defaults.get("fishing_style") or "Downlines"
-        m1, m2 = st.columns(2)
-        bait_choice = m1.selectbox(
-            "Bait / lure", all_baits,
-            index=all_baits.index(last_bait) if last_bait in all_baits else 0,
-            key="log_bait")
-        fishing_style = m2.selectbox(
-            "Style of fishing", all_styles,
-            index=all_styles.index(style_default) if style_default in all_styles else 0,
-            key="log_style")
-        other_baits, other_styles = _other_methods_inputs(
-            "log", all_baits, all_styles, bait_choice, fishing_style)
+        bait_choice, fishing_style, other_baits, other_styles = _methods_used_inputs(
+            "log", all_baits, all_styles,
+            [last_bait] if last_bait else [], [style_default])
 
     trip_bait = bait_choice or None
     trip_style = fishing_style or None
@@ -1778,32 +1795,47 @@ def page_log_session():
 _KEEP_AFTER_SAVE = {"log_saved_msg"}
 
 
-def _other_methods_inputs(prefix: str, all_baits: list, all_styles: list,
-                          primary_bait, primary_style, existing_baits=None,
-                          existing_styles=None) -> tuple:
-    """"Other baits & styles used today" pick-lists, under the primary method.
+def _methods_used_inputs(prefix: str, all_baits: list, all_styles: list,
+                         default_baits: list, default_styles: list) -> tuple:
+    """"Baits used today" / "Styles used today": pick as many as you like.
 
-    Returns (other_baits, other_styles). Hidden, returning two empty lists,
-    until migrations/007 has added the columns that store them, so the page
-    never offers a choice it would silently drop on save.
+    Returns (bait, style, other_baits, other_styles). The FIRST pick of each is
+    stored as the trip's bait_lure / fishing_style: it is what every fish
+    defaults to, and what a fish left alone is credited to. The rest go to
+    other_baits / other_styles (migrations/007), so the storage and analytics
+    are unchanged from the "primary + others" form this replaced.
+
+    Before migration 007 there is nowhere to keep a second pick, so this falls
+    back to one dropdown each rather than offering choices it would drop.
     """
     if not db.has_other_methods_columns():
+        st.markdown("**Fishing method used this day**")
+        m1, m2 = st.columns(2)
+        b0 = default_baits[0] if default_baits else None
+        s0 = default_styles[0] if default_styles else None
+        bait = m1.selectbox("Bait / lure", all_baits,
+                            index=all_baits.index(b0) if b0 in all_baits else 0,
+                            key=f"{prefix}_bait")
+        style = m2.selectbox("Style of fishing", all_styles,
+                             index=all_styles.index(s0) if s0 in all_styles else 0,
+                             key=f"{prefix}_style")
         st.caption("Any other techniques used today can be set on individual fish.")
-        return [], []
-    b_opts = [b for b in all_baits if b and b != primary_bait]
-    s_opts = [s_ for s_ in all_styles if s_ and s_ != primary_style]
-    b_default = [b for b in (existing_baits or []) if b in b_opts]
-    s_default = [s_ for s_ in (existing_styles or []) if s_ in s_opts]
-    o1, o2 = st.columns(2)
-    other_baits = o1.multiselect(
-        "Other baits used today", b_opts, default=b_default,
-        key=f"{prefix}_other_baits", placeholder="optional, pick any")
-    other_styles = o2.multiselect(
-        "Other styles used today", s_opts, default=s_default,
-        key=f"{prefix}_other_styles", placeholder="optional, pick any")
-    st.caption("Pick everything else you fished today, even what caught nothing. "
-               "They show up first in each fish's Bait and Style below.")
-    return other_baits, other_styles
+        return bait, style, [], []
+
+    m1, m2 = st.columns(2)
+    baits = m1.multiselect(
+        "Baits used today", all_baits,
+        default=[b for b in default_baits if b in all_baits],
+        key=f"{prefix}_baits", placeholder="Pick as many as you used")
+    styles = m2.multiselect(
+        "Styles used today", all_styles,
+        default=[s_ for s_ in default_styles if s_ in all_styles],
+        key=f"{prefix}_styles", placeholder="Pick as many as you used")
+    st.caption("List everything you fished today, even what caught nothing. "
+               "Each fish below starts on the **first** bait and style you "
+               "picked; change it on the fish if it came on something else.")
+    return ((baits[0] if baits else None), (styles[0] if styles else None),
+            baits[1:], styles[1:])
 
 
 def _reset_entry_fields(prefix: str) -> None:
@@ -2035,12 +2067,12 @@ def _render_session_detail(detail: dict, sid: int):
         if _air or _wat:
             st.write(f"**Air / Water:** {_air + '°' if _air else '—'} / "
                      f"{_wat + '°' if _wat else '—'}")
-        st.write(f"**Bait/Lure:** {_plain(detail.get('bait_lure'))}")
-        st.write(f"**Style:** {_plain(detail.get('fishing_style')) or 'n/a'}")
-        _also_b = data_entry.parse_methods(detail.get("other_baits"))
-        _also_s = data_entry.parse_methods(detail.get("other_styles"))
-        if _also_b or _also_s:
-            st.write("**Also used:** " + _plain(", ".join(_also_b + _also_s)))
+        _baits = ([detail["bait_lure"]] if detail.get("bait_lure") else []) + \
+            data_entry.parse_methods(detail.get("other_baits"))
+        _styles = ([detail["fishing_style"]] if detail.get("fishing_style") else []) + \
+            data_entry.parse_methods(detail.get("other_styles"))
+        st.write(f"**Baits used:** {_plain(', '.join(_baits)) or 'n/a'}")
+        st.write(f"**Styles used:** {_plain(', '.join(_styles)) or 'n/a'}")
         st.write(f"**Anglers:** {detail.get('num_anglers') or 1}")
         st.write(f"**Total fish:** {detail['total_fish']}")
         if detail.get("moon_phase"):
@@ -2276,22 +2308,14 @@ def _edit_form(detail: dict):
                 step=1, format="%d", key=f"e_water_{sid}", placeholder="optional")
 
     with method_box:
-        st.markdown("**Primary fishing method used this day**")
-        all_b = list(dict.fromkeys(edit_all_baits + list(x_baits_e)
-                                   + ([existing_bait] if existing_bait else [])))
-        all_s = list(dict.fromkeys(edit_all_styles + list(x_styles_e)
-                                   + ([existing_style] if existing_style else [])))
-        m1, m2 = st.columns(2)
-        bait_choice_e = m1.selectbox("Bait / lure", all_b,
-                                     index=_idx(all_b, existing_bait),
-                                     key=f"e_bait_{sid}")
-        fishing_style_e = m2.selectbox("Style of fishing", all_s,
-                                       index=_idx(all_s, existing_style),
-                                       key=f"e_style_{sid}")
-        other_baits_e, other_styles_e = _other_methods_inputs(
-            f"e_{sid}", all_b, all_s, bait_choice_e, fishing_style_e,
-            existing_baits=data_entry.parse_methods(detail.get("other_baits")),
-            existing_styles=data_entry.parse_methods(detail.get("other_styles")))
+        used_b = ([existing_bait] if existing_bait else []) + \
+            data_entry.parse_methods(detail.get("other_baits"))
+        used_s = ([existing_style] if existing_style else []) + \
+            data_entry.parse_methods(detail.get("other_styles"))
+        all_b = list(dict.fromkeys(edit_all_baits + list(x_baits_e) + used_b))
+        all_s = list(dict.fromkeys(edit_all_styles + list(x_styles_e) + used_s))
+        bait_choice_e, fishing_style_e, other_baits_e, other_styles_e = \
+            _methods_used_inputs(f"e_{sid}", all_b, all_s, used_b, used_s)
 
     trip_bait_e = bait_choice_e or None
     trip_style_e = fishing_style_e or None
@@ -2418,7 +2442,7 @@ def _render_whats_working():
                      hide_index=True, width="stretch")
         st.caption(
             "**fish** counts every fish, credited to the bait or style you set on "
-            "it (or the trip's primary if you left it). **trips used** includes "
+            "it (or the trip's first-listed one if you left it). **trips used** includes "
             "trips where it caught nothing. **fish/hr** comes only from trips "
             "where you used that one method; a mixed day's hours can't be split "
             "fairly, so they're left out rather than guessed. **rate from** is "
@@ -3291,10 +3315,13 @@ def main():
     elif st.session_state.get("demo_admin_toggle"):
         st.warning("🛠 **Demo admin mode** — changes here are live for all demo viewers.", icon="🛠️")
 
+    # Keyed so a page button (e.g. the Dashboard's "Log a Session") can switch
+    # pages by setting this key in a callback, and the menu stays in step.
     page = st.sidebar.radio(
         "Navigate",
         ["Dashboard", "Log a Session", "Browse & Search", "Journal Notes",
          "Analytics", "Calendar", "Map", "Export", "Privacy & Data"],
+        key="nav_page",
     )
 
     # Leaving a page ends whatever was on it. Without this, saving a trip and

@@ -242,8 +242,10 @@ environment variables:
 
 ## App pages (in `app.py`)
 Dashboard (KPIs, personal bests, DWR-unfiled nudge, recent trips) · Log a Session
-(spot picker, per-fish editor with Kept?, always-visible Notes, "Other baits/styles
-used today") · Browse & Search (trip **cards** + full detail with route map, DWR
+(spot picker, per-fish editor with Kept?, always-visible Notes, "Baits/Styles used
+today" multi-picks: the FIRST pick is stored as `bait_lure`/`fishing_style` and is
+every fish's default, the rest go to `other_*`; before migration 007 they fall back
+to one dropdown each) · Browse & Search (trip **cards** + full detail with route map, DWR
 report + filed toggle, edit, delete) · Journal Notes (trip notes read straight
 through by date range / word search) · Calendar (trip days are clickable via an
 inline Custom Component v2, `_CAL_COMPONENT`).

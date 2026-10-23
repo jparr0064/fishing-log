@@ -184,6 +184,25 @@ Analytics assume all 10 came on the primary, or does it use the per-fish Bait/St
   **"tried but caught nothing"**, e.g. "Umbrella rig: used on 6 trips, 0 fish."
 - **DWR report unaffected:** it never uses bait or style.
 
+## 8. One-tap "Log a Session" from the Dashboard
+_(added 2026-10-22 · **BUILT**)_
+
+Phone users on the water want to go straight to logging; the menu hides behind
+the sidebar arrow. Added a full-width "🎣 Log a Session" button at the top of the
+Dashboard (hidden on the read-only demo). Not done (yet): a direct link
+(`?page=log`) for a phone home-screen shortcut.
+
+## 9. Revisit #4: "Methods used today" instead of "Primary"
+_(added 2026-10-22 · **BUILT 2026-10-22**: "Baits used today" / "Styles used
+today", first pick is each fish's default)_
+
+A user would rather list every method used, as many as they like, with no
+"primary". Per-fish Bait/Style below stays optional for tying a method to a fish.
+Proposal: one "Baits used today" and one "Styles used today" pick-list. The
+**first** one picked is what each fish defaults to (and what a fish left alone is
+credited to). Storage is unchanged: first → `bait_lure`/`fishing_style`, the rest
+→ `other_baits`/`other_styles`, so no further database change.
+
 ---
 
 ## Parked (maybe later / not now)
