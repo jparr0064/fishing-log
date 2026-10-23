@@ -229,7 +229,9 @@ def has_trip_uuid_column() -> bool:
 # been applied yet (production is migrated by hand, AFTER the sandbox).
 #   location_notes   migrations/006 - "where you fished" written as notes,
 #                    alongside or instead of map pins
-_OPTIONAL_SESSION_COLUMNS = ("location_notes",)
+#   other_baits /    migrations/007 - methods used besides the primary,
+#   other_styles     as a JSON list in text
+_OPTIONAL_SESSION_COLUMNS = ("location_notes", "other_baits", "other_styles")
 _session_columns_cache: dict = {}
 
 
@@ -251,6 +253,11 @@ def session_optional_columns() -> set:
 def has_location_notes_column() -> bool:
     """True when sessions.location_notes is present (migrations/006)."""
     return "location_notes" in session_optional_columns()
+
+
+def has_other_methods_columns() -> bool:
+    """True when sessions.other_baits / other_styles are present (migrations/007)."""
+    return {"other_baits", "other_styles"} <= session_optional_columns()
 
 
 def session_fields() -> tuple:

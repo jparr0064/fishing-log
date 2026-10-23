@@ -241,8 +241,8 @@ def test_one_members_trips_never_appear_for_another(db_url):
 # ---- Every page renders -------------------------------------------------
 
 @pytest.mark.parametrize("page", [
-    "Dashboard", "Log a Session", "Browse & Search", "Analytics",
-    "Calendar", "Map", "Export", "Privacy & Data",
+    "Dashboard", "Log a Session", "Browse & Search", "Journal Notes",
+    "Analytics", "Calendar", "Map", "Export", "Privacy & Data",
 ])
 def test_every_page_renders_for_a_signed_in_member(db_url, page):
     _seed(db_url, APPROVED, trips=2)
@@ -473,3 +473,52 @@ def test_trip_described_in_notes_shows_notes_not_a_blank_map(db_url_notes):
     assert at.radio(key="e_where_1_mode").value == "📝 Describe it in notes", \
         "editing reopens on the option the trip used"
     assert "Set your spot(s)" not in _text(at)
+
+
+@pytest.fixture
+def db_url_methods(db_url_notes):
+    """db_url_notes plus migrations/007 (other baits & styles used today)."""
+    from sqlalchemy import create_engine, text
+    from fishing_log import database as db
+    engine = create_engine(db_url_notes)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN other_baits TEXT"))
+        conn.execute(text("ALTER TABLE sessions ADD COLUMN other_styles TEXT"))
+    engine.dispose()
+    db._session_columns_cache.clear()
+    yield db_url_notes
+
+
+def test_other_methods_pick_list_hidden_before_migration_007(db_url_notes):
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    _assert_no_exception(at)
+    assert not [m for m in at.multiselect if m.key == "log_other_baits"], \
+        "never offer a choice the database would silently drop"
+
+
+def test_other_methods_and_always_visible_notes_save(db_url_methods):
+    at = _app(db_url_methods, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    _assert_no_exception(at)
+    at.multiselect(key="log_other_baits").set_value(["Jigging Spoon"])
+    at.text_area(key="log_notes").set_value("Gulls on the main channel").run()
+    at.number_input(key="catch_editor_g0_n").set_value(3).run()
+    at.button(key="log_save").click().run()
+    _assert_no_exception(at)
+    assert not at.error, "; ".join(str(e.value) for e in at.error)
+
+    s = _rows(db_url_methods, "SELECT * FROM sessions")[0]
+    assert s["notes"] == "Gulls on the main channel"
+    assert s["other_baits"] == '["Jigging Spoon"]'
+
+
+def test_journal_notes_page_renders(db_url_notes):
+    _seed(db_url_notes, APPROVED)
+    at = _app(db_url_notes, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Journal Notes").run()
+    _assert_no_exception(at)
+    assert "Journal Notes" in _text(at)

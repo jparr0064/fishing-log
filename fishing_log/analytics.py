@@ -62,11 +62,14 @@ def _session_frame() -> pd.DataFrame:
 
 def _load_session_frame() -> pd.DataFrame:
     from sqlalchemy import text
-    query = text("""
+    # Methods used besides the primary, where migration 007 exists.
+    other = (", s.other_baits, s.other_styles"
+             if db.has_other_methods_columns() else "")
+    query = text(f"""
         SELECT
             s.id, s.date, s.location_name, s.weather, s.hours_fished,
             s.water_temp, s.fishing_style, s.bait_lure, s.start_time,
-            s.moon_phase,
+            s.moon_phase{other},
             COUNT(f.id) AS total_fish
         FROM sessions s
         LEFT JOIN fish f ON f.session_id = s.id
@@ -75,6 +78,10 @@ def _load_session_frame() -> pd.DataFrame:
     """)
     with db.read_connection() as conn:
         df = pd.read_sql_query(query, conn, params={"email": db.get_current_user()})
+
+    for col in ("other_baits", "other_styles"):
+        if col not in df.columns:
+            df[col] = None
 
     if df.empty:
         return df
@@ -247,21 +254,31 @@ def by_time_of_day() -> pd.DataFrame:
 
 
 def by_fishing_style() -> pd.DataFrame:
-    df = _session_frame()
-    if df.empty:
-        return pd.DataFrame()
-    out = _summarize(df, "fishing_style")
-    return out.sort_values("fish_per_hour", ascending=False).reset_index(drop=True)
+    """Success metrics per fishing style, crediting each fish to its own style."""
+    return _method_summary("fishing_style")
 
 
 def by_bait() -> pd.DataFrame:
-    df = _session_frame()
-    if df.empty:
-        return pd.DataFrame()
-    df = df[df["bait_lure"].astype(str).str.strip() != ""]
-    if df.empty:
-        return pd.DataFrame()
-    out = _summarize(df, "bait_lure")
+    """Success metrics per bait, crediting each fish to its own bait."""
+    return _method_summary("bait_lure")
+
+
+def _method_summary(dimension: str) -> pd.DataFrame:
+    """by_method() in the same shape as the other "what's working" tables.
+
+    These used to credit every fish on a trip to the trip's primary method,
+    so the bait/style rows disagreed with "What actually caught them" on
+    every mixed day. Now both are built from the same per-fish rule.
+    ``sessions`` is trips the method was used on (caught on or not), and
+    fish_per_hour comes from single-method trips only; rate_trips says how
+    many.
+    """
+    out = by_method(dimension)
+    if out.empty:
+        return out
+    out = out.rename(columns={"trips": "sessions", "trips_with_fish": "sessions_with_fish"})
+    out["success_rate_%"] = (out["sessions_with_fish"] / out["sessions"] * 100).round(1)
+    out["avg_fish_per_session"] = (out["total_fish"] / out["sessions"]).round(2)
     return out.sort_values("fish_per_hour", ascending=False).reset_index(drop=True)
 
 
@@ -289,14 +306,17 @@ def best_conditions(min_sessions: int = 2) -> list:
     for name, tbl, col in dims:
         if tbl.empty:
             continue
-        pool = tbl[(tbl["sessions"] >= min_sessions) & (tbl["fish_per_hour"] > 0)]
+        # Bait/style rates come only from single-method trips, so those are
+        # the trips that have to clear the bar, and the ones reported.
+        n_col = "rate_trips" if "rate_trips" in tbl.columns else "sessions"
+        pool = tbl[(tbl[n_col] >= min_sessions) & (tbl["fish_per_hour"] > 0)]
         if pool.empty:
             continue
         top = pool.loc[pool["fish_per_hour"].idxmax()]
         label = top[col]
         if label in (None, "Unknown") or pd.isna(label):
             continue
-        results.append((name, str(label), float(top["fish_per_hour"]), int(top["sessions"])))
+        results.append((name, str(label), float(top["fish_per_hour"]), int(top[n_col])))
     return results
 
 
@@ -369,68 +389,112 @@ def by_method(dimension: str = "bait_lure") -> pd.DataFrame:
 
     ``dimension`` is "bait_lure" or "fishing_style".
 
-    This is the per-FISH view, and it exists because the trip-level one is
-    wrong on exactly the days that matter. by_bait() credits every fish on an
-    outing to the single method recorded for the trip, so a day spent running
-    live shad on downlines while ripping spoons gives all the credit to
-    whichever was typed in the box.
+    This is the per-FISH view. Crediting every fish on an outing to the
+    single method recorded for the trip is wrong on exactly the days that
+    matter: a day spent running live shad on downlines while ripping spoons
+    would give all the credit to whichever was typed in the box.
 
     Columns:
-      total_fish   — every fish, attributed by its own method, falling back to
-                     the trip's when the fish has none (which is every fish
-                     logged before migration 005, so history stays intact).
-      trips        — how many outings this method appears on.
+      total_fish      every fish, attributed by its own method, falling back
+                      to the trip's primary when the fish has none (which is
+                      every fish logged before migration 005, so history
+                      stays intact).
+      trips           outings this method was used on: the primary, any
+                      "other used today" (migration 007), or any fish's own.
+                      A method tried all day for nothing still counts here.
+      trips_with_fish of those, how many it caught at least one fish on.
       fish_per_hour, rate_trips — computed ONLY from single-method outings.
 
     That last restriction is the honest part. On a five-hour trip running two
     techniques at once there is no way to know how the hours divided, so a
-    per-method rate would be invented. Rather than split the time arbitrarily,
-    the rate is built from trips where one method was the only method — where
-    the number means something — and rate_trips says how many trips that was,
-    so a thin figure is visible as thin. total_fish still counts everything.
+    per-method rate would be invented. A trip is single-method when the
+    primary, the "other used today" list and every fish all name the same one.
+    rate_trips says how many trips fed the rate, so a thin figure reads thin.
     """
     if dimension not in ("bait_lure", "fishing_style"):
         raise ValueError("dimension must be 'bait_lure' or 'fishing_style'")
 
-    df = _fish_with_method()
-    if df.empty:
+    rows = _method_trips(dimension)
+    if rows.empty:
         return pd.DataFrame()
 
-    col = f"eff_{dimension}"
-    df = df[df[col].astype(str).str.strip() != ""]
-    if df.empty:
-        return pd.DataFrame()
-
-    # A trip is single-method for this dimension when every fish on it shares
-    # one method AND the trip recorded hours.
-    per_trip = df.groupby("session_id")[col].nunique()
-    single = set(per_trip[per_trip == 1].index)
-    timed = df[df["session_id"].isin(single) & df["hours_fished"].notna()
-               & (df["hours_fished"] > 0)]
-
-    totals = df.groupby(col).agg(
-        total_fish=("session_id", "size"),
+    totals = rows.groupby("method").agg(
+        total_fish=("fish", "sum"),
         trips=("session_id", "nunique"),
+        trips_with_fish=("fish", lambda f: int((f > 0).sum())),
+        total_hours=("hours", "sum"),
     ).reset_index()
 
+    timed = rows[rows["single"] & rows["hours"].notna() & (rows["hours"] > 0)]
     if timed.empty:
         totals["fish_per_hour"] = 0.0
         totals["rate_trips"] = 0
     else:
-        # One row per (trip, method) so a trip's hours are counted once.
-        hours = timed.groupby([col, "session_id"])["hours_fished"].first()
-        fish = timed.groupby([col, "session_id"]).size()
-        rate = pd.DataFrame({"fish": fish, "hours": hours}).groupby(level=0).agg(
-            fish=("fish", "sum"), hours=("hours", "sum"), rate_trips=("fish", "size"))
+        rate = timed.groupby("method").agg(
+            fish=("fish", "sum"), hours=("hours", "sum"),
+            rate_trips=("session_id", "nunique"))
         rate["fish_per_hour"] = (rate["fish"] / rate["hours"]).round(2)
-        totals = totals.merge(
-            rate[["fish_per_hour", "rate_trips"]], left_on=col, right_index=True,
-            how="left")
+        totals = totals.merge(rate[["fish_per_hour", "rate_trips"]],
+                              left_on="method", right_index=True, how="left")
         totals["fish_per_hour"] = totals["fish_per_hour"].fillna(0.0)
         totals["rate_trips"] = totals["rate_trips"].fillna(0).astype(int)
 
-    totals = totals.rename(columns={col: dimension})
-    return totals.sort_values("total_fish", ascending=False).reset_index(drop=True)
+    for c in ("total_fish", "trips", "trips_with_fish"):
+        totals[c] = totals[c].astype(int)
+    totals["total_hours"] = totals["total_hours"].fillna(0.0)
+    totals = totals.rename(columns={"method": dimension})
+    return totals.sort_values(["total_fish", "trips"], ascending=False).reset_index(drop=True)
+
+
+def _method_trips(dimension: str) -> pd.DataFrame:
+    """One row per (trip, method used on it) with the fish credited to it.
+
+    Columns: session_id, method, fish, hours, single. ``single`` is True when
+    this was the only method of this dimension used on the trip.
+    """
+    sessions = _session_frame()
+    if sessions.empty:
+        return pd.DataFrame()
+    fish = _fish_with_method()
+    col = f"eff_{dimension}"
+    other_col = "other_baits" if dimension == "bait_lure" else "other_styles"
+
+    caught: dict = {}
+    if not fish.empty:
+        counts = fish[fish[col].astype(str).str.strip() != ""].groupby(
+            ["session_id", col]).size()
+        for (sid, method), n in counts.items():
+            caught.setdefault(int(sid), {})[str(method).strip()] = int(n)
+
+    records = []
+    for r in sessions.itertuples():
+        sid = int(r.id)
+        used = []
+        for m in ([getattr(r, dimension)] + _parse_methods(getattr(r, other_col))
+                  + list(caught.get(sid, {}))):
+            m = "" if m is None or (isinstance(m, float) and pd.isna(m)) else str(m).strip()
+            if m and m not in used:
+                used.append(m)
+        hours = r.hours_fished if pd.notna(r.hours_fished) else None
+        for m in used:
+            records.append({"session_id": sid, "method": m,
+                            "fish": caught.get(sid, {}).get(m, 0),
+                            "hours": hours, "single": len(used) == 1})
+    return pd.DataFrame(records, columns=["session_id", "method", "fish", "hours", "single"])
+
+
+def _parse_methods(value) -> list:
+    """Stored "other methods" JSON text as a list (see data_entry.parse_methods)."""
+    from .data_entry import parse_methods
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    return parse_methods(value)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _fish_method_cached(user_email: str, cache_ver: int) -> pd.DataFrame:
+    """Cache-key wrapper; see _session_frame_cached."""
+    return _load_fish_with_method()
 
 
 def _fish_with_method() -> pd.DataFrame:
@@ -440,6 +504,10 @@ def _fish_with_method() -> pd.DataFrame:
     That fallback is what lets migration 005 ship without a backfill: a fish
     logged before it simply means "caught the way the trip was".
     """
+    return _fish_method_cached(*_cache_key())
+
+
+def _load_fish_with_method() -> pd.DataFrame:
     from sqlalchemy import text
     with db.read_connection() as conn:
         has_method = db.has_fish_method_columns(conn)

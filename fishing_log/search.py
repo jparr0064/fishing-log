@@ -249,6 +249,51 @@ def calendar_month(year: int, month: int) -> dict:
     return result
 
 
+def journal_entries(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    word: Optional[str] = None,
+    only_with_notes: bool = True,
+    oldest_first: bool = False,
+) -> list:
+    """Trips as journal entries: date, fish count, water temp, and notes.
+
+    The Journal Notes page reads a season's notes straight through, so this
+    returns only what its one-line header needs. Everything else stays behind
+    "View trip". ``word`` matches the notes text, case-insensitively.
+    """
+    where = ["s.user_email = :email"]
+    params: dict = {"email": _user()}
+    if date_from:
+        where.append("s.date >= :date_from")
+        params["date_from"] = str(date_from)
+    if date_to:
+        where.append("s.date <= :date_to")
+        params["date_to"] = str(date_to)
+    if only_with_notes:
+        where.append("s.notes IS NOT NULL AND TRIM(s.notes) <> ''")
+    if word and word.strip():
+        where.append(_like("s.notes", "word"))
+        params["word"] = f"%{word.strip()}%"
+    order = "ASC" if oldest_first else "DESC"
+    query = text(f"""
+        SELECT s.id, s.date, s.start_time, s.water_temp, s.notes,
+               (SELECT COUNT(*) FROM fish WHERE session_id = s.id) AS total_fish
+        FROM sessions s
+        WHERE {' AND '.join(where)}
+        ORDER BY s.date {order}, s.id {order}
+    """)
+    with db.read_connection() as conn:
+        rows = conn.execute(query, params).mappings().all()
+    return [{
+        "id": int(r["id"]),
+        "date": str(r["date"])[:10],
+        "water_temp": r["water_temp"],
+        "total_fish": int(r["total_fish"]),
+        "notes": (r["notes"] or "").strip(),
+    } for r in rows]
+
+
 def fish_export() -> pd.DataFrame:
     """Flat one-row-per-fish table for CSV export (stable IDs + kept/released)."""
     query = text("""

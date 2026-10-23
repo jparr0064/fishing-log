@@ -157,7 +157,10 @@ package. Keep logic in the package.
 ### Data model (Supabase Postgres)
 - `sessions` — trip-level fields incl. `user_email`, `weather`, `air_temp`,
   `water_temp`, `bait_lure`, `fishing_style`, `num_anglers`, `dwr_filed`, `moon_phase`,
-  `latitude/longitude` (the **starting** spot), `notes`.
+  `latitude/longitude` (the **starting** spot), `notes`, `location_notes` (006),
+  `other_baits`/`other_styles` (007, JSON list text; methods besides the primary).
+  Optional columns are detected at runtime (`db.session_optional_columns()`), so
+  code ships before the migration is applied.
 - `fish` — **one row per fish** (`species`, `length`, `weight`, `kept`, `depth`).
   Zero rows = skunked.
 - `spots` — one or more map pins per session for trolling (`latitude`, `longitude`,
@@ -239,8 +242,16 @@ environment variables:
 
 ## App pages (in `app.py`)
 Dashboard (KPIs, personal bests, DWR-unfiled nudge, recent trips) · Log a Session
-(spot picker, per-fish editor with Kept?) · Browse & Search (trip **cards** + full
-detail with route map, DWR report + filed toggle, edit, delete)
+(spot picker, per-fish editor with Kept?, always-visible Notes, "Other baits/styles
+used today") · Browse & Search (trip **cards** + full detail with route map, DWR
+report + filed toggle, edit, delete) · Journal Notes (trip notes read straight
+through by date range / word search) · Calendar (trip days are clickable via an
+inline Custom Component v2, `_CAL_COMPONENT`).
+
+**Bait/style analytics rule:** every bait/style stat credits each fish to its own
+method, else the trip's primary; fish/hr comes only from single-method trips (primary
++ `other_*` + every fish all agree). `analytics.by_method` is the one implementation;
+`by_bait`/`by_fishing_style` reshape it.
 
 ## Related projects (don't blend)
 
