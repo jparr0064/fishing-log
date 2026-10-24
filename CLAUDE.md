@@ -164,7 +164,12 @@ package. Keep logic in the package.
 - `fish` — **one row per fish** (`species`, `length`, `weight`, `kept`, `depth`).
   Zero rows = skunked.
 - `spots` — one or more map pins per session for trolling (`latitude`, `longitude`,
-  `label`, `caught`). The session's `latitude/longitude` = first spot.
+  `label`, `caught`, `fish_count`). The session's `latitude/longitude` = first spot.
+  Migration 008 adds `run_no` + `kind` ('run' | 'spot'): pins of the same run are
+  joined by one line, different runs never are, and single spots get no line.
+  NULLs (every older pin) = run 1, so old trips draw as before. In app dicts these
+  are `run` / `kind`; `map_view.label_points` is the one place labels ("2·3", "S1")
+  are worked out.
 - All children FK to `sessions(id)` with `ON DELETE CASCADE`.
 - **Schema lives in Supabase**, not in code. `init_db()` is a no-op stub — there is
   no in-app migration system anymore. To add a column: alter the table in Supabase,

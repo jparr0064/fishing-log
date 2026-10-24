@@ -42,6 +42,7 @@ def _clear_caches():
         db._trip_uuid_support.clear()
         db._session_columns_cache.clear()
         db._fish_columns_cache.clear()
+        db._spot_columns_cache.clear()
         db._fallback_cache_ver = 0
         try:
             st.cache_data.clear()

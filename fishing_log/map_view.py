@@ -86,13 +86,68 @@ def build_map(df: pd.DataFrame) -> folium.Map:
     return fmap
 
 
-def _spot_divicon(number: int, caught: bool, fish_count=None) -> folium.DivIcon:
-    """Route marker. Every spot shows its order number; spots where a fish was
-    caught show a fish picture with the number as a small corner badge. When
-    two or more fish were caught at the spot, a gold ×N badge (bottom corner)
-    shows the count — text-based on purpose, never color alone (CB-safe)."""
+# Trolling runs are told apart by line pattern AND marker label ("2·3"), never
+# by color alone (color-blind user). Colors are Okabe-Ito; run 1 keeps the
+# original blue so a single-run trip looks exactly as it always has.
+RUN_STYLES = [
+    ("#1f78b4", [10, 20]),
+    ("#E69F00", [3, 10]),
+    ("#009E73", [18, 8]),
+    ("#CC79A7", [6, 6]),
+    ("#56B4E9", [14, 4, 2, 4]),
+    ("#D55E00", [2, 6]),
+]
+SPOT_COLOR = "#F0E442"  # single spots: yellow SQUARE marker, labelled S1, S2...
+
+
+def run_style(run: int) -> tuple:
+    """(color, dash pattern) for trolling run ``run`` (1-based), cycling."""
+    return RUN_STYLES[(max(1, int(run)) - 1) % len(RUN_STYLES)]
+
+
+def pin_label(point: dict, runs_on_trip: int, spot_number: int | None = None,
+              order_in_run: int | None = None) -> str:
+    """Marker text: "3" on a one-run trip, "2·3" with several runs, "S1" for a spot."""
+    if point.get("kind") == "spot":
+        return f"S{spot_number}"
+    return f"{point.get('run') or 1}\u00b7{order_in_run}" if runs_on_trip > 1 \
+        else str(order_in_run)
+
+
+def label_points(points) -> list:
+    """Each point with its marker label and a plain-words name, in input order.
+
+    Returns [(point, label, name), ...] where name is e.g. "Run 2, pin 3" or
+    "Spot 1". Shared by the maps and the per-pin fish count boxes so the two
+    always agree.
+    """
+    runs = {int(p.get("run") or 1) for p in points if p.get("kind") != "spot"}
+    order: dict = {}
+    n_spot = 0
+    out = []
+    for p in points:
+        if p.get("kind") == "spot":
+            n_spot += 1
+            out.append((p, pin_label(p, len(runs), spot_number=n_spot), f"Spot {n_spot}"))
+        else:
+            r = int(p.get("run") or 1)
+            order[r] = order.get(r, 0) + 1
+            name = (f"Run {r}, pin {order[r]}" if len(runs) > 1 else f"Pin {order[r]}")
+            out.append((p, pin_label(p, len(runs), order_in_run=order[r]), name))
+    return out
+
+
+def _spot_divicon(label, caught: bool, fish_count=None, color: str = "#1f78b4",
+                  square: bool = False) -> folium.DivIcon:
+    """Route marker. Every pin shows its label (order number, "run·order", or
+    "S1" for a single spot); pins where a fish was caught show a fish picture
+    with the label as a small corner badge. When two or more fish were caught
+    there, a gold ×N badge (bottom corner) shows the count — text-based on
+    purpose, never color alone (CB-safe). Single spots are SQUARE, run pins
+    round, so shape also tells them apart."""
+    label = str(label)
+    radius = "3px" if square else "50%" if len(label) <= 2 else "10px"
     if caught:
-        # Fish picture + numbered badge so order is still readable.
         count_badge = ""
         if fish_count and int(fish_count) >= 2:
             count_badge = (
@@ -101,49 +156,62 @@ def _spot_divicon(number: int, caught: bool, fish_count=None) -> folium.DivIcon:
                 'padding:0 2px;line-height:13px;font-size:9px;font-weight:bold;'
                 f'color:#000;">&times;{int(fish_count)}</div>'
             )
+        badge_w = max(16, 6 * len(label) + 6)
         html = (
             '<div style="position:relative;width:30px;height:30px;text-align:center;">'
             '<div style="font-size:24px;line-height:30px;'
             'filter:drop-shadow(0 0 2px #fff) drop-shadow(0 0 2px #fff);">\U0001F41F</div>'
-            f'<div style="position:absolute;top:-3px;right:-4px;background:#1f78b4;'
-            'border:1px solid #fff;border-radius:50%;width:16px;height:16px;'
-            f'line-height:15px;font-size:10px;font-weight:bold;color:#fff;">{number}</div>'
+            f'<div style="position:absolute;top:-3px;right:-4px;background:{color};'
+            f'border:1px solid #333;border-radius:{"3px" if square else "8px"};'
+            f'min-width:{badge_w}px;height:16px;padding:0 2px;box-sizing:border-box;'
+            f'line-height:15px;font-size:10px;font-weight:bold;color:#000;">{label}</div>'
             f'{count_badge}'
             '</div>'
         )
         return folium.DivIcon(html=html, icon_size=(30, 30), icon_anchor=(15, 15))
+    w = max(24, 8 * len(label) + 8)
     html = (
-        f'<div style="background:#1f78b4;border:2px solid #333333;border-radius:50%;'
-        f'width:24px;height:24px;line-height:21px;text-align:center;'
-        f'font-size:12px;font-weight:bold;color:#000;">{number}</div>'
+        f'<div style="background:{color};border:2px solid #333333;border-radius:{radius};'
+        f'width:{w}px;height:24px;line-height:21px;text-align:center;box-sizing:border-box;'
+        f'font-size:12px;font-weight:bold;color:#000;">{label}</div>'
     )
-    return folium.DivIcon(html=html, icon_size=(24, 24), icon_anchor=(12, 12))
+    return folium.DivIcon(html=html, icon_size=(w, 24), icon_anchor=(w // 2, 12))
 
 
 def draw_route(fmap: folium.Map, points) -> None:
-    """Draw a numbered, directional trolling route on a map.
+    """Draw a trip's trolling runs and single spots on a map.
 
-    ``points`` is an ordered list of {lat, lon, caught, fish_count?}. A moving
-    AntPath shows the direction of travel; numbered markers show order; 🐟
-    markers mark spots where a fish was caught, with a gold ×N badge when two
-    or more were caught there.
+    ``points`` is an ordered list of {lat, lon, caught, fish_count?, kind?,
+    run?}. Pins of the same run are joined in order by a moving AntPath that
+    shows direction of travel; different runs are NEVER joined to each other
+    (packing up and running across the lake is not part of a troll). Single
+    spots (kind "spot") get a square marker and no line. A point with no
+    kind/run is run 1, so trips from before runs existed draw as they always
+    did. 🐟 marks pins where a fish was caught, with a gold ×N badge for 2+.
     """
-    coords = [(p["lat"], p["lon"]) for p in points]
-    if len(coords) >= 2:
-        AntPath(coords, color="#1f78b4", weight=4, delay=1000, dash_array=[10, 20]).add_to(fmap)
-    for i, p in enumerate(points, 1):
+    runs: dict = {}
+    for p in points:
+        if p.get("kind") != "spot":
+            runs.setdefault(int(p.get("run") or 1), []).append((p["lat"], p["lon"]))
+    for run, coords in runs.items():
+        if len(coords) >= 2:
+            color, dash = run_style(run)
+            AntPath(coords, color=color, weight=4, delay=1000,
+                    dash_array=dash).add_to(fmap)
+
+    for p, label, name in label_points(points):
         caught = bool(p.get("caught"))
         fc = p.get("fish_count")
         if caught:
-            if fc:
-                tip = f"Spot {i} · \U0001F3A3 {int(fc)} fish caught"
-            else:
-                tip = f"Spot {i} · \U0001F3A3 fish caught"
+            tip = f"{name} · \U0001F3A3 {int(fc)} fish caught" if fc \
+                else f"{name} · \U0001F3A3 fish caught"
         else:
-            tip = f"Spot {i}"
+            tip = name
+        is_spot = p.get("kind") == "spot"
+        color = SPOT_COLOR if is_spot else run_style(int(p.get("run") or 1))[0]
         folium.Marker(
             (p["lat"], p["lon"]),
-            icon=_spot_divicon(i, caught, fc),
+            icon=_spot_divicon(label, caught, fc, color=color, square=is_spot),
             tooltip=tip,
         ).add_to(fmap)
 
@@ -155,7 +223,7 @@ def add_heatmap(fmap: folium.Map, points) -> None:
 
 
 def build_route_map(points) -> folium.Map:
-    """A standalone map of one session's trolling route (numbered + directional)."""
+    """A standalone map of one session's trolling runs and spots."""
     if not points:
         return folium.Map(location=DEFAULT_CENTER, zoom_start=DEFAULT_ZOOM)
     center = (points[0]["lat"], points[0]["lon"])

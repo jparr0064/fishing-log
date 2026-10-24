@@ -114,15 +114,21 @@ def _fish_df() -> pd.DataFrame:
 
 
 def _spots_df() -> pd.DataFrame:
-    q = text("""
-        SELECT sp.id AS spot_id, sp.session_id, s.date,
-               sp.latitude, sp.longitude, sp.label, sp.caught, sp.fish_count
-        FROM spots sp JOIN sessions s ON s.id = sp.session_id
-        WHERE s.user_email = :email
-        ORDER BY sp.session_id, sp.id
-    """)
     with db.read_connection() as conn:
+        # run_no / kind only exist after migration 008.
+        extra = "".join(f", sp.{c}" for c in ("run_no", "kind")
+                        if c in db.spot_optional_columns(conn))
+        q = text(f"""
+            SELECT sp.id AS spot_id, sp.session_id, s.date,
+                   sp.latitude, sp.longitude, sp.label, sp.caught, sp.fish_count{extra}
+            FROM spots sp JOIN sessions s ON s.id = sp.session_id
+            WHERE s.user_email = :email
+            ORDER BY sp.session_id, sp.id
+        """)
         df = pd.read_sql_query(q, conn, params={"email": db.get_current_user()})
+    for c in ("run_no", "kind"):
+        if c not in df.columns:
+            df[c] = None
     if not df.empty:
         # Route order within each trip (spots were inserted in click order).
         df["route_order"] = df.groupby("session_id").cumcount() + 1
@@ -173,6 +179,9 @@ def export_backup(
             "label": None if (r.label is None or (isinstance(r.label, float) and pd.isna(r.label))) else r.label,
             "caught": bool(r.caught),
             "fish_count": None if pd.isna(r.fish_count) else int(r.fish_count),
+            "kind": "spot" if _s(r.kind) == "spot" else "run",
+            "run": None if _s(r.kind) == "spot" else (
+                1 if pd.isna(r.run_no) else int(r.run_no)),
         })
 
     out_sessions = []

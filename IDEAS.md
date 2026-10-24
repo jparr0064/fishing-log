@@ -203,6 +203,43 @@ Proposal: one "Baits used today" and one "Styles used today" pick-list. The
 credited to). Storage is unchanged: first → `bait_lure`/`fishing_style`, the rest
 → `other_baits`/`other_styles`, so no further database change.
 
+## 10. Separate trolling runs, plus single fishing spots
+_(added 2026-10-24 · **BUILT 2026-10-24** on `staging`; needs
+`migrations/008_spot_runs.sql` in Supabase before the run/spot switch appears)_
+
+**The want:** A trolling day is several runs: troll one stretch, pack up, run to
+a different part of the lake, troll again. Today every pin on a trip is joined by
+ONE line, so the map draws a line across land from the end of run 1 to the start
+of run 2. Want: Run 1, Run 2, … each its own connected line, never joined to each
+other. Also single stand-alone spots (e.g. sat on downlines here) with no line.
+
+**How it works today:** `spots` rows are one ordered list per trip;
+`map_view.draw_route` draws a single AntPath through all of them, numbered 1..N.
+
+**Proposal:**
+- On the map picker, a mode switch: **"🚤 Trolling run"** / **"📍 Single spot"**,
+  and a **"Start new run"** button. Pins dropped in run mode join that run's line;
+  single spots get a marker only.
+- Map: each run its own line + numbered pins labelled by run ("R1·3", "R2·1"),
+  runs told apart by number labels and line dash pattern (not color alone —
+  color-blind rule), single spots as a different marker shape. 🐟 counts as now.
+- Data: small additive migration (008): `spots.run_no` (int) and `spots.kind`
+  ('run' | 'spot'). NULL on every existing pin = "run 1", so old trips draw
+  exactly as they do today, no backfill.
+- Also touches: trip detail map, edit trip, backup/restore, tests. The Map page
+  heatmap just uses the points, so it's unaffected. DWR report unaffected.
+
+**Effort:** Medium. The data side is easy; the map picker is the fiddly part
+(it's the most delicate widget in the app, especially on a phone).
+
+**Decided (2026-10-24):**
+- Single spots get a fish count / 🐟, same as run pins.
+- Undo: "remove last pin" plus "delete this run".
+
+**Open:**
+- On a phone, is tapping to drop pins working OK today, or is that a pain point
+  too? (John is checking)
+
 ---
 
 ## Parked (maybe later / not now)

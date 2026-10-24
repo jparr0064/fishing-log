@@ -389,3 +389,17 @@ def test_backup_round_trips_other_methods_and_per_fish_bait():
     trip = data["sessions"][0]
     assert data_entry.parse_methods(trip["other_baits"]) == ["Jigging Spoon"]
     assert trip["fish"][0]["bait_lure"] == "Jigging Spoon"
+
+
+def test_backup_round_trips_trolling_runs_and_spots():
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
+        conn.execute(text("ALTER TABLE spots ADD COLUMN run_no INTEGER"))
+        conn.execute(text("ALTER TABLE spots ADD COLUMN kind TEXT"))
+    db._spot_columns_cache.clear()
+    data_entry.add_session(
+        {"date": "2026-10-21", "location_name": "SML"}, [],
+        [{"lat": 37.1, "lon": -79.6, "kind": "run", "run": 2},
+         {"lat": 37.2, "lon": -79.7, "kind": "spot"}])
+    spots = backup_io.export_backup()["sessions"][0]["spots"]
+    assert [(s["kind"], s["run"]) for s in spots] == [("run", 2), ("spot", None)]

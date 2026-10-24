@@ -1120,3 +1120,82 @@ def test_journal_entries_are_scoped_to_the_user():
             "INSERT INTO sessions (user_email, date, location_name, notes) "
             "VALUES ('someone@else.com', '2026-03-02', 'SML', 'their secret spot')"))
     assert search.journal_entries("2026-01-01", "2026-12-31") == []
+
+
+# ---------------------------------------------------------------------------
+# Trolling runs and single spots (migrations/008)
+# ---------------------------------------------------------------------------
+
+def _add_spot_run_columns():
+    from sqlalchemy import text
+    with db.get_engine().begin() as conn:
+        conn.execute(text("ALTER TABLE spots ADD COLUMN run_no INTEGER"))
+        conn.execute(text("ALTER TABLE spots ADD COLUMN kind TEXT"))
+    db._spot_columns_cache.clear()
+
+
+_RUNS = [
+    {"lat": 37.10, "lon": -79.60, "kind": "run", "run": 1},
+    {"lat": 37.11, "lon": -79.61, "kind": "run", "run": 1, "fish_count": 2},
+    {"lat": 37.20, "lon": -79.70, "kind": "run", "run": 2},
+    {"lat": 37.21, "lon": -79.71, "kind": "run", "run": 2},
+    {"lat": 37.30, "lon": -79.80, "kind": "spot", "fish_count": 1},
+]
+
+
+def test_runs_and_spots_round_trip():
+    _add_spot_run_columns()
+    sid = data_entry.add_session({"date": "2026-10-20", "location_name": "SML"}, [], _RUNS)
+    spots = search.get_session(sid)["spots"]
+    assert [(s["kind"], s["run"]) for s in spots] == [
+        ("run", 1), ("run", 1), ("run", 2), ("run", 2), ("spot", None)]
+    assert spots[4]["fish_count"] == 1 and spots[4]["caught"]
+
+
+def test_pins_saved_before_migration_008_read_as_run_one():
+    """Without the columns a trip still saves, and reads back as one route."""
+    sid = data_entry.add_session({"date": "2026-10-20", "location_name": "SML"}, [], _RUNS)
+    spots = search.get_session(sid)["spots"]
+    assert len(spots) == 5
+    assert all(s["kind"] == "run" and s["run"] == 1 for s in spots)
+
+
+def test_validate_spots_defaults_kind_and_run():
+    cleaned = data_entry.validate_spots([
+        {"lat": 37.1, "lon": -79.6},                          # legacy pin
+        {"lat": 37.1, "lon": -79.6, "kind": "spot", "run": 4},  # spot: no run
+        {"lat": 37.1, "lon": -79.6, "kind": "nonsense", "run": "x"},
+    ])
+    assert [(c["kind"], c["run"]) for c in cleaned] == [
+        ("run", 1), ("spot", None), ("run", 1)]
+
+
+def test_runs_are_drawn_as_separate_lines():
+    import folium
+    from folium.plugins import AntPath
+    fmap = folium.Map(location=(37.1, -79.6))
+    map_view.draw_route(fmap, _RUNS)
+    paths = [c for c in fmap._children.values() if isinstance(c, AntPath)]
+    assert len(paths) == 2, "one line per run, none for the single spot"
+    assert sorted(len(p.locations) for p in paths) == [2, 2], \
+        "run 1 must never join run 2 across the lake"
+
+
+def test_old_trip_draws_one_line_through_every_pin():
+    import folium
+    from folium.plugins import AntPath
+    fmap = folium.Map(location=(37.1, -79.6))
+    legacy = [{"lat": 37.1 + i / 100, "lon": -79.6} for i in range(4)]
+    map_view.draw_route(fmap, legacy)
+    paths = [c for c in fmap._children.values() if isinstance(c, AntPath)]
+    assert len(paths) == 1 and len(paths[0].locations) == 4
+
+
+def test_pin_labels():
+    labels = [(lbl, name) for _, lbl, name in map_view.label_points(_RUNS)]
+    assert labels == [("1·1", "Run 1, pin 1"), ("1·2", "Run 1, pin 2"),
+                      ("2·1", "Run 2, pin 1"), ("2·2", "Run 2, pin 2"),
+                      ("S1", "Spot 1")]
+    one_run = [{"lat": 1, "lon": 1}, {"lat": 2, "lon": 2}]
+    assert [lbl for _, lbl, _ in map_view.label_points(one_run)] == ["1", "2"], \
+        "a single-run trip keeps the plain numbers it always had"

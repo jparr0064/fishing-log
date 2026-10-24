@@ -415,10 +415,20 @@ def validate_spots(spots: List[dict]) -> List[dict]:
             fc = int(fc)
             if fc < 0:
                 raise ValidationError("Spot fish count can't be negative.")
+        # Trolling run vs single spot (migrations/008). Anything unrecognised
+        # is a run pin, and a run pin with no run number belongs to run 1,
+        # which is how every pin from before runs existed is read.
+        kind = "spot" if s.get("kind") == "spot" else "run"
+        run = None
+        if kind == "run":
+            try:
+                run = max(1, int(s.get("run") or 1))
+            except (TypeError, ValueError):
+                run = 1
         cleaned.append({
             "lat": lat, "lon": lon, "label": s.get("label"),
             "caught": bool(s.get("caught")) or (fc or 0) > 0,
-            "fish_count": fc,
+            "fish_count": fc, "kind": kind, "run": run,
         })
     return cleaned
 

@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-10-22.1"
+APP_BUILD = "2026-10-24.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -811,6 +811,30 @@ def _append_spot(spots: list, lat, lon) -> bool:
     return False
 
 
+PIN_RUN = "🚤 Trolling run"
+PIN_SPOT = "📍 Single spot"
+
+
+def _delete_run(spots: list, map_key: str, run: int) -> None:
+    """Remove every pin of one trolling run, keeping the rest and their counts.
+
+    The per-pin count boxes are keyed by position, so deleting from the middle
+    would hand one pin's count to another. Counts already live on the pin
+    dicts (_sync_spot_counts), so drop every box's state and let them reseed
+    from the pins that remain. Later runs move down one (run 3 becomes run 2)
+    so the labels never skip a number.
+    """
+    for i in range(len(spots)):
+        st.session_state.pop(f"{map_key}_c{i}", None)
+    spots[:] = [sp for sp in spots
+                if sp.get("kind") == "spot" or int(sp.get("run") or 1) != run]
+    for sp in spots:
+        if sp.get("kind") != "spot" and int(sp.get("run") or 1) > run:
+            sp["run"] = int(sp["run"]) - 1
+    remaining = [int(sp.get("run") or 1) for sp in spots if sp.get("kind") != "spot"]
+    st.session_state[f"{map_key}_run"] = max(remaining, default=1)
+
+
 WHERE_MAP = "📍 Drop pins on a map"
 WHERE_NOTES = "📝 Describe it in notes"
 
@@ -878,6 +902,8 @@ def _clear_spot_state(state_key: str, map_key: str):
     for i in range(n):
         st.session_state.pop(f"{map_key}_c{i}", None)
     st.session_state.pop(state_key, None)
+    for suffix in ("_run", "_pinmode"):
+        st.session_state.pop(f"{map_key}{suffix}", None)
 
 
 def _spot_count_default(sp: dict) -> int:
@@ -921,10 +947,45 @@ def _spots_picker(state_key: str, map_key: str, defer_rerun: bool = False):
     view_center = st.session_state.get(center_key, default_center)
     view_zoom = st.session_state.get(zoom_key, 15)
 
+    runs_ok = db.has_spot_run_columns()
+    run_key = f"{map_key}_run"
     hdr_col, fs_col = st.columns([5, 1])
-    hdr_col.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
-                     "click again to add each spot along your troll.")
+    if runs_ok:
+        hdr_col.markdown("**Set your spot(s)** — tap the map to drop pins. Trolling-run "
+                         "pins join into a line; start a new run when you move to "
+                         "another area. Single spots stand on their own.")
+    else:
+        hdr_col.markdown("**Set your spot(s)** — click the map to drop the start pin, then "
+                         "click again to add each spot along your troll.")
     fullscreen = fs_col.checkbox("⛶ Full screen", key=f"{map_key}_fs", value=False)
+
+    # Trolling run vs single spot (migrations/008). Before the columns exist
+    # every pin is one route, exactly as before, so nothing is offered that
+    # would be lost on save.
+    pin_mode = PIN_RUN
+    current_run = 1
+    if runs_ok:
+        used_runs = [int(sp.get("run") or 1) for sp in spots if sp.get("kind") != "spot"]
+        st.session_state.setdefault(run_key, max(used_runs, default=1))
+        current_run = st.session_state[run_key]
+        m_col, r_col = st.columns([3, 2])
+        pin_mode = m_col.radio("Next pin is a", [PIN_RUN, PIN_SPOT], horizontal=True,
+                               key=f"{map_key}_pinmode")
+        if pin_mode == PIN_RUN:
+            in_run = sum(1 for sp in spots if sp.get("kind") != "spot"
+                         and int(sp.get("run") or 1) == current_run)
+            r_col.markdown(f"Adding to **Run {current_run}** ({in_run} pin(s))")
+            if r_col.button("➕ Start a new run", key=f"{map_key}_newrun",
+                            disabled=in_run == 0,
+                            help="Moving to another area? Start a new run so the line "
+                                 "doesn't join across the lake."):
+                st.session_state[run_key] = current_run + 1
+                st.rerun()
+
+    def _tag(sp: dict) -> None:
+        if runs_ok:
+            sp["kind"] = "spot" if pin_mode == PIN_SPOT else "run"
+            sp["run"] = None if pin_mode == PIN_SPOT else current_run
     map_height = 900 if fullscreen else 480
 
     if fullscreen:
@@ -942,15 +1003,24 @@ def _spots_picker(state_key: str, map_key: str, defer_rerun: bool = False):
             loc = streamlit_geolocation()
             if loc and loc.get("latitude") is not None:
                 if _append_spot(spots, loc["latitude"], loc["longitude"]):
+                    _tag(spots[-1])
                     st.rerun()
         if spots and st.button("↩ Last", key=f"{map_key}_rmlast"):
             st.session_state.pop(f"{map_key}_c{len(spots) - 1}", None)
             spots.pop()
             st.rerun()
+        if (runs_ok and pin_mode == PIN_RUN
+                and any(sp.get("kind") != "spot" and int(sp.get("run") or 1) == current_run
+                        for sp in spots)
+                and st.button(f"🗑 Run {current_run}", key=f"{map_key}_delrun",
+                              help=f"Delete every pin in run {current_run}")):
+            _delete_run(spots, map_key, current_run)
+            st.rerun()
         if spots and st.button("🗑 Clear", key=f"{map_key}_clear"):
             for i in range(len(spots)):
                 st.session_state.pop(f"{map_key}_c{i}", None)
             spots.clear()
+            st.session_state.pop(run_key, None)
             st.rerun()
 
     with map_col:
@@ -971,10 +1041,12 @@ def _spots_picker(state_key: str, map_key: str, defer_rerun: bool = False):
             lc = result["last_clicked"]
             st.session_state[center_key] = (lc["lat"], lc["lng"])
             if _append_spot(spots, lc["lat"], lc["lng"]):
+                _tag(spots[-1])
                 # See _fish_editor: never st.rerun() while a form submit is
                 # pending this run, or the save is silently lost.
                 if not defer_rerun:
-                    st.toast(f"📍 Spot {len(spots)} dropped — click again to add another.")
+                    _name = map_view.label_points(spots)[-1][2]
+                    st.toast(f"📍 {_name} dropped — tap again to add another.")
                     st.rerun()
 
     # Per-spot fish counts (0 = no fish there). Spots with fish show a 🐟 on
@@ -983,9 +1055,9 @@ def _spots_picker(state_key: str, map_key: str, defer_rerun: bool = False):
         st.caption("How many fish did you catch at each spot? "
                    "(0 = none — spots with fish show as a 🐟 on the map)")
         cols = st.columns(min(4, len(spots)))
-        for i, sp in enumerate(spots):
+        for i, (_sp, _label, _name) in enumerate(map_view.label_points(spots)):
             cols[i % len(cols)].number_input(
-                f"Spot {i + 1} 🎣", min_value=0, step=1, key=f"{map_key}_c{i}",
+                f"{_name} 🎣", min_value=0, step=1, key=f"{map_key}_c{i}",
             )
         _sync_spot_counts(spots, map_key)
         assigned = sum(sp.get("fish_count") or 0 for sp in spots)
@@ -2038,7 +2110,8 @@ def _render_session_detail(detail: dict, sid: int):
             st.session_state[skey] = [
                 {"lat": s["latitude"], "lon": s["longitude"],
                  "caught": bool(s.get("caught")),
-                 "fish_count": s.get("fish_count")}
+                 "fish_count": s.get("fish_count"),
+                 "kind": s.get("kind") or "run", "run": s.get("run")}
                 for s in detail.get("spots", [])
             ]
         _edit_form(detail)
@@ -2158,12 +2231,19 @@ def _render_session_detail(detail: dict, sid: int):
                           disabled=_is_demo())
 
     if detail_spots:
-        st.markdown(f"**🗺️ Trolling route** ({len(detail_spots)} spot(s)) — "
-                    "numbered in order; the arrowed line shows direction; "
+        _n_runs = len({s.get("run") or 1 for s in detail_spots
+                       if s.get("kind") != "spot"})
+        _n_single = sum(1 for s in detail_spots if s.get("kind") == "spot")
+        _parts = ([f"{_n_runs} trolling run(s)"] if _n_runs else []) + \
+            ([f"{_n_single} single spot(s)"] if _n_single else [])
+        st.markdown(f"**🗺️ Where you fished** ({', '.join(_parts)}) — "
+                    "each run is its own arrowed line, pins numbered in order "
+                    "(2·3 = run 2, pin 3); square S pins are single spots; "
                     "🐟 marks where a fish was caught (×N = how many).")
         route_pts = [
             {"lat": s["latitude"], "lon": s["longitude"],
-             "caught": bool(s.get("caught")), "fish_count": s.get("fish_count")}
+             "caught": bool(s.get("caught")), "fish_count": s.get("fish_count"),
+             "kind": s.get("kind") or "run", "run": s.get("run")}
             for s in detail_spots
         ]
         st_folium(map_view.build_route_map(route_pts), height=320,

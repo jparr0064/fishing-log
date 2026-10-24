@@ -406,6 +406,33 @@ def insert_fish(session_id: int, fish_rows) -> None:
         insert_fish_tx(conn, session_id, fish_rows)
 
 
+# Optional `spots` columns (migrations/008): which trolling run a pin belongs
+# to, and whether it is a run pin or a single stand-alone spot. Cached by
+# engine identity like the fish columns above.
+_OPTIONAL_SPOT_COLUMNS = ("run_no", "kind")
+_spot_columns_cache: dict = {}
+
+
+def spot_optional_columns(conn=None) -> set:
+    """Which optional `spots` columns this database actually has."""
+    engine = get_engine()
+    key = id(engine)
+    if key not in _spot_columns_cache:
+        try:
+            from sqlalchemy import inspect as sa_inspect
+            target = conn if conn is not None else engine
+            present = {c["name"] for c in sa_inspect(target).get_columns("spots")}
+            _spot_columns_cache[key] = {c for c in _OPTIONAL_SPOT_COLUMNS if c in present}
+        except Exception:
+            _spot_columns_cache[key] = set()
+    return _spot_columns_cache[key]
+
+
+def has_spot_run_columns(conn=None) -> bool:
+    """True when spots.run_no / spots.kind are present (migrations/008)."""
+    return set(_OPTIONAL_SPOT_COLUMNS) <= spot_optional_columns(conn)
+
+
 def insert_spots(session_id: int, spots) -> None:
     """Insert spot rows. Each item: {lat, lon, label?, caught?, fish_count?}.
 
@@ -427,6 +454,8 @@ def _spot_rows(session_id: int, spots) -> list:
             "label": s.get("label"),
             "caught": int(bool(s.get("caught")) or (s.get("fish_count") or 0) > 0),
             "fish_count": int(s["fish_count"]) if s.get("fish_count") is not None else None,
+            "kind": "spot" if s.get("kind") == "spot" else "run",
+            "run_no": None if s.get("kind") == "spot" else int(s.get("run") or 1),
         }
         for s in spots
         if s.get("lat") is not None and s.get("lon") is not None
@@ -439,13 +468,13 @@ def insert_spots_tx(conn, session_id: int, spots) -> None:
     if not rows:
         return
     _assert_session_owned(conn, session_id)
-    conn.execute(
-        text(
-            "INSERT INTO spots (session_id, latitude, longitude, label, caught, fish_count) "
-            "VALUES (:session_id, :latitude, :longitude, :label, :caught, :fish_count)"
-        ),
-        rows,
-    )
+    columns = ["session_id", "latitude", "longitude", "label", "caught", "fish_count"]
+    # run_no / kind only once migration 008 exists; before that a trip saves
+    # as one route, exactly as it always has.
+    columns += [c for c in _OPTIONAL_SPOT_COLUMNS if c in spot_optional_columns(conn)]
+    sql = (f"INSERT INTO spots ({', '.join(columns)}) "
+           f"VALUES ({', '.join(':' + c for c in columns)})")
+    conn.execute(text(sql), [{c: r[c] for c in columns} for r in rows])
 
 
 def insert_photo(session_id: int, path: str, caption: Optional[str] = None) -> int:

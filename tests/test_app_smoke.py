@@ -103,8 +103,10 @@ def db_url_notes(db_url):
     engine.dispose()
     db._session_columns_cache.clear()
     db._fish_columns_cache.clear()
+    db._spot_columns_cache.clear()
     yield db_url
     db._fish_columns_cache.clear()
+    db._spot_columns_cache.clear()
 
 
 def _seed(url, email, trips=2):
@@ -553,3 +555,50 @@ def test_group_changed_by_hand_keeps_its_bait(db_url_methods):
     at.multiselect(key="log_baits").set_value(["Live Shad", "Umbrella Rig"]).run()
     _assert_no_exception(at)
     assert at.selectbox(key="catch_editor_g0_bait").value == "Jigging Spoon"
+
+
+@pytest.fixture
+def db_url_runs(db_url_methods):
+    """db_url_methods plus migrations/008 (trolling runs and single spots)."""
+    from sqlalchemy import create_engine, text
+    from fishing_log import database as db
+    engine = create_engine(db_url_methods)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE spots ADD COLUMN run_no INTEGER"))
+        conn.execute(text("ALTER TABLE spots ADD COLUMN kind TEXT"))
+    engine.dispose()
+    db._spot_columns_cache.clear()
+    yield db_url_methods
+    db._spot_columns_cache.clear()
+
+
+def test_run_controls_hidden_before_migration_008(db_url_methods):
+    at = _app(db_url_methods, user=APPROVED)
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    at.radio(key="log_where_mode").set_value("📍 Drop pins on a map").run()
+    _assert_no_exception(at)
+    assert not [r for r in at.radio if r.key == "loc_picker_pinmode"]
+
+
+def test_delete_run_keeps_other_pins_and_their_counts(db_url_runs):
+    at = _app(db_url_runs, user=APPROVED)
+    at.session_state["spots"] = [
+        {"lat": 37.10, "lon": -79.60, "kind": "run", "run": 1, "fish_count": 1},
+        {"lat": 37.20, "lon": -79.70, "kind": "run", "run": 2, "fish_count": 5},
+        {"lat": 37.30, "lon": -79.80, "kind": "spot", "run": None, "fish_count": 2},
+        {"lat": 37.40, "lon": -79.90, "kind": "run", "run": 3, "fish_count": 3},
+    ]
+    at.session_state["loc_picker_run"] = 2
+    at.run()
+    at.sidebar.radio[0].set_value("Log a Session").run()
+    at.radio(key="log_where_mode").set_value("📍 Drop pins on a map").run()
+    _assert_no_exception(at)
+    assert at.radio(key="loc_picker_pinmode") is not None
+    at.button(key="loc_picker_delrun").click().run()
+    _assert_no_exception(at)
+
+    left = at.session_state["spots"]
+    assert [(s["kind"], s["run"], s["fish_count"]) for s in left] == [
+        ("run", 1, 1), ("spot", None, 2), ("run", 2, 3)], \
+        "run 2 gone, run 3 renumbered to 2, every count still on its own pin"

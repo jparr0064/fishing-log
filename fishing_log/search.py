@@ -119,19 +119,35 @@ def get_session(session_id: int) -> Optional[dict]:
             {"sid": session_id},
         ).mappings().all()
 
+        #   run_no/kind              008 — trolling run vs single spot
+        _spot_extra = "".join(f", {c}" for c in ("run_no", "kind")
+                              if c in db.spot_optional_columns(conn))
         spots = conn.execute(
             text(
-                "SELECT latitude, longitude, label, caught, fish_count FROM spots "
-                "WHERE session_id = :sid ORDER BY id"
+                f"SELECT latitude, longitude, label, caught, fish_count{_spot_extra} "
+                "FROM spots WHERE session_id = :sid ORDER BY id"
             ),
             {"sid": session_id},
         ).mappings().all()
 
     session = dict(row)
     session["fish"] = [{**dict(f), "kept": bool(f["kept"])} for f in fish]
-    session["spots"] = [dict(s) for s in spots]
+    session["spots"] = [_spot_dict(s) for s in spots]
     session["total_fish"] = len(session["fish"])
     return session
+
+
+def _spot_dict(row) -> dict:
+    """A spots row with its run/kind read the way the map draws them.
+
+    NULLs (every pin from before migration 008) mean run 1, a run pin.
+    """
+    s = dict(row)
+    kind = "spot" if s.pop("kind", None) == "spot" else "run"
+    run_no = s.pop("run_no", None)
+    s["kind"] = kind
+    s["run"] = None if kind == "spot" else int(run_no or 1)
+    return s
 
 
 def map_rows(
