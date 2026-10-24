@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-10-24.1"
+APP_BUILD = "2026-10-24.2"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -190,6 +190,16 @@ def _inject_css():
         """
         <style>
           .block-container { padding-top: 2rem; max-width: 1180px; }
+          /* Streamlit 1.66 truncates button labels to one line ("Step 1 — Open
+             pre-filled DWR …", "◄…"). Let them wrap again, as on 1.60, so a
+             narrow column or a phone still shows the whole label. */
+          button .stMarkdownEllipsis, a[data-testid^="stBaseLinkButton"] .stMarkdownEllipsis {
+            white-space: normal !important; overflow: visible !important;
+            text-overflow: clip !important;
+          }
+          button .stMarkdownEllipsis p, a[data-testid^="stBaseLinkButton"] .stMarkdownEllipsis p {
+            white-space: normal !important;
+          }
           [data-testid="stMetric"] {
             background: #ffffff; border: 1px solid #d7e2ec; border-radius: 12px;
             padding: 12px 16px; box-shadow: 0 1px 2px rgba(16,42,67,.05);
