@@ -256,18 +256,22 @@ def _inject_css():
             }
             .st-key-cal_nav h3 { font-size: 1.1rem !important; padding-top: 0 !important; }
             /* Collapsed-sidebar control: the BUTTON itself is the "Menu" pill,
-               so the whole pill (arrow + text) is one tap target */
+               so the whole pill (arrow + text) is one tap target. streamlit
+               1.66 replaced the stSidebarCollapsedControl wrapper with a bare
+               stExpandSidebarButton; both are styled. */
             [data-testid="stSidebarCollapsedControl"] {
               background: transparent; padding: 0; box-shadow: none;
             }
-            [data-testid="stSidebarCollapsedControl"] button {
+            [data-testid="stSidebarCollapsedControl"] button,
+            button[data-testid="stExpandSidebarButton"] {
               background: #0e7490 !important; color: #fff !important;
               border-radius: 10px; padding: 4px 14px 4px 6px;
               width: auto; min-height: 40px;
               display: inline-flex; align-items: center;
               box-shadow: 0 1px 4px rgba(0,0,0,.25);
             }
-            [data-testid="stSidebarCollapsedControl"] button::after {
+            [data-testid="stSidebarCollapsedControl"] button::after,
+            button[data-testid="stExpandSidebarButton"]::after {
               content: "Menu"; color: #fff; font-weight: 600; font-size: .9rem;
               margin-left: 2px;
             }
@@ -3495,7 +3499,10 @@ def _mobile_sidebar_autoclose():
             function collapse(attempt) {
               var sb = document.querySelector('section[data-testid="stSidebar"]');
               if (!sb) return;
-              if (sb.getAttribute('aria-expanded') === 'false') return;
+              // streamlit 1.66 moved the collapsed state from aria-expanded
+              // on the sidebar to data-collapsed; check both.
+              if (sb.getAttribute('data-collapsed') === 'true' ||
+                  sb.getAttribute('aria-expanded') === 'false') return;
               var btn = sb.querySelector('[data-testid="stSidebarCollapseButton"] button');
               if (btn) btn.click();
               if (attempt < 6) setTimeout(function () { collapse(attempt + 1); }, 300);

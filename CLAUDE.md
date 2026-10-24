@@ -52,12 +52,21 @@ project-related:
 - Compile-check: `.venv/Scripts/python.exe -m py_compile app.py`
 - First-time setup: `python -m venv .venv && .venv/Scripts/python.exe -m pip install -r requirements.txt pytest`
 
-**Streamlit version:** `requirements.txt` pins `streamlit==1.60.0` (upgraded from
+**Streamlit version:** `requirements.txt` pins `streamlit==1.66.1`. It went to 1.60.0 (upgraded from
 1.42.2 on 2026-07-26 for CR-3 — 1.42 predates the 1.55.0 SSRF/path-traversal fix,
 streamlit#13733). 1.60 serves on **uvicorn**, and exposes the signed-in identity as
 `st.user`; `st.experimental_user` was the 1.42 name, so the `_st_user()` shim in
 `app.py` still covers both — harmless, and cheap insurance if the venv ever drops
 back.
+
+Upgraded again to **1.66.1** on 2026-10-22: it is the first release that allows
+Pillow 13, and Pillow 12.3.0 carried 37 advisories (pip-audit). 1.66 changed
+sidebar markup the app's CSS/JS targets: the collapsed state moved from
+`aria-expanded` to `data-collapsed` on the sidebar, and the expand control is now
+a bare `button[data-testid="stExpandSidebarButton"]` (was
+`stSidebarCollapsedControl`). Both old and new selectors are kept in `app.py`. If
+a streamlit bump breaks the mobile "Menu" pill or sidebar auto-close, check those
+selectors in the browser first.
 
 `Authlib` is pinned to **1.6.12**. It was on 1.6.5 to dodge streamlit#13461 (a
 broken `/oauth2callback`), but 1.6.5 carries nine advisories — including
@@ -80,7 +89,7 @@ place on 2026-07-26, so local and Cloud match — if that drifts and something "
 locally, breaks on Cloud," suspect the gap.
 
 **Known deprecation:** `_mobile_sidebar_autoclose()` uses
-`st.components.v1.html`, which 1.60 warns is removed after 2026-06-01 (still
+`st.components.v1.html`, which 1.60+ warns is removed after 2026-06-01 (still present in 1.66.1 and
 functional). `st.iframe` is *not* a drop-in — it takes a URL, not an HTML string —
 and `st.html` does not execute scripts, which that hack needs. Rewriting it needs
 a different approach, not a rename.

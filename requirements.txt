@@ -5,14 +5,20 @@
 # CR-3 (2026-07-26): upgraded from streamlit 1.42.2, which predates the 1.55.0
 # security fix for SSRF / path traversal in component and static-file handling.
 # See streamlit/streamlit#13733.
-streamlit==1.60.0
+#
+# 2026-10-22: 1.60.0 -> 1.66.1, the first release that allows Pillow 13
+# (1.60 through 1.66.0 all require pillow<13). See the Pillow note below.
+streamlit==1.66.1
 
 # The pyarrow<20 / numpy<2.3 / protobuf<6 caps that used to live here existed
 # only to hold those libraries at versions contemporary with streamlit 1.42,
 # whose native code crashed at startup against 2026-era builds. 1.60 supports
 # current versions, so the caps are gone — reinstating them would now pin the
 # app to builds *older* than what streamlit itself expects.
-Pillow>=9.0
+#
+# Pillow: the app never calls it directly, but streamlit does. 12.3.0 (the last
+# 12.x) carries 37 advisories, all fixed only in 13.0.0, so 13 is the floor.
+Pillow>=13.0
 pandas>=3.0.6
 folium>=0.16
 streamlit-folium>=0.27.4
