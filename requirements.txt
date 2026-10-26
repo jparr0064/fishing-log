@@ -19,11 +19,11 @@ streamlit==1.66.1
 # Pillow: the app never calls it directly, but streamlit does. 12.3.0 (the last
 # 12.x) carries 37 advisories, all fixed only in 13.0.0, so 13 is the floor.
 Pillow>=13.0
-pandas>=3.0.6
+pandas>=3.1.0
 folium>=0.16
 streamlit-folium>=0.27.4
 streamlit-geolocation>=0.0.10
-sqlalchemy>=2.0.54
+sqlalchemy>=2.1.6
 psycopg2-binary>=2.9.13
 altair>=6.3.0
 
