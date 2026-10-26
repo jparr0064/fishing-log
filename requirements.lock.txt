@@ -21,7 +21,7 @@
 altair==6.3.0
 anyio==4.15.1
 attrs==26.1.0
-Authlib==1.6.12
+Authlib==1.9.1
 branca==0.8.2
 certifi==2026.10.23
 cffi==2.1.1
