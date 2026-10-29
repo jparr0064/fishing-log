@@ -34,7 +34,7 @@ st.set_page_config(page_title="Fishing Log", page_icon="🎣", layout="wide")
 
 # Shown at the bottom of the sidebar so we can tell at a glance which build
 # the cloud is actually serving. Bump on each deploy-relevant change.
-APP_BUILD = "2026-10-24.2"
+APP_BUILD = "2026-10-29.1"
 
 # Default home water — pre-fills the Log a Session form.
 DEFAULT_LOCATION = "Smith Mountain Lake"
@@ -79,6 +79,13 @@ ANALYTICS_EXPLAINER = (
     "- **Thin numbers are marked.** Anything built on only a trip or two shows "
     "as an 🌱 early signal."
 )
+
+# The trip notes box is what the Journal Notes page reads. Say so on the box,
+# so it isn't confused with "Notes about where you fished", which does not.
+JOURNAL_NOTES_LABEL = "📓 Journal notes (shows on the Journal Notes page)"
+JOURNAL_NOTES_HELP = ("These notes appear on the **Journal Notes** page, where you "
+                      "can read a whole season's notes in order. The \"where you "
+                      "fished\" notes in section 2 are separate and don't show there.")
 
 # Okabe-Ito color-blind-safe palette (distinguishable across CVD types).
 CB_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00", "#F0E442"]
@@ -199,6 +206,16 @@ def _inject_css():
           }
           button .stMarkdownEllipsis p, a[data-testid^="stBaseLinkButton"] .stMarkdownEllipsis p {
             white-space: normal !important;
+          }
+          /* Dashboard "Log a Session": the one-tap way into logging from a
+             phone on the water. Big and unmissable on purpose. */
+          .st-key-dash_log_btn button {
+            min-height: 4.2rem; border-radius: 14px;
+            box-shadow: 0 3px 10px rgba(16,42,67,.25);
+          }
+          .st-key-dash_log_btn button p {
+            font-size: 1.6rem !important; font-weight: 800 !important;
+            letter-spacing: .02em;
           }
           [data-testid="stMetric"] {
             background: #ffffff; border: 1px solid #d7e2ec; border-radius: 12px;
@@ -1710,8 +1727,8 @@ def page_log_session():
     # Notes sit in plain view, not in the collapsed temperatures section: they
     # feed the Journal Notes page, and a box nobody sees is a box nobody fills.
     with notes_box:
-        notes = st.text_area("Notes", height=100, key="log_notes",
-                             placeholder=NOTES_PLACEHOLDER)
+        notes = st.text_area(JOURNAL_NOTES_LABEL, height=100, key="log_notes",
+                             placeholder=NOTES_PLACEHOLDER, help=JOURNAL_NOTES_HELP)
 
     with fields_box:
         c1, c2 = st.columns(2)
@@ -2200,6 +2217,7 @@ def _render_session_detail(detail: dict, sid: int):
             )
         st.table(fish_df)
     if detail.get("notes"):
+        st.markdown("**📓 Journal notes**")
         st.info(_plain(detail["notes"]))
 
     # DWR Striped Bass Angler Journal — pre-filled Google Form for this outing.
@@ -2361,8 +2379,9 @@ def _edit_form(detail: dict):
         x_baits_e, x_styles_e = _extra_methods(f"e_fish_{sid}")
 
     with notes_box:
-        notes = st.text_area("Notes", value=detail.get("notes") or "", height=100,
-                             key=f"e_notes_{sid}", placeholder=NOTES_PLACEHOLDER)
+        notes = st.text_area(JOURNAL_NOTES_LABEL, value=detail.get("notes") or "",
+                             height=100, key=f"e_notes_{sid}",
+                             placeholder=NOTES_PLACEHOLDER, help=JOURNAL_NOTES_HELP)
 
     with fields_box:
         c1, c2 = st.columns(2)
