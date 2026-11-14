@@ -1,9 +1,16 @@
 name: Keep app awake
 
 # Streamlit Community Cloud hibernates an app after ~12 hours with no traffic,
-# and the next visitor then waits through a cold start. This pings the app on a
+# and the next visitor then waits through a cold start. This visits the app on a
 # 6-hour cycle so it never crosses that window. Runs on GitHub's runners, so it
 # does not depend on any particular machine being switched on.
+#
+# It must be a real browser visit. Until 2026-11-14 this step fetched the page
+# with curl. That passed every 6 hours, yet the app was found asleep that day:
+# curl only downloads the HTML shell (the "gone to sleep" page answers 200 too)
+# and never opens the app's live connection, which is what counts as a visitor.
+# Now a headless Chromium loads the app, clicks the wake button if the app is
+# asleep, and fails the run unless the app itself actually renders.
 #
 # Scheduled workflows only fire from the DEFAULT branch. This file lives on
 # cloud-version because cloud-version is the default branch as of 2026-08-30
@@ -19,39 +26,70 @@ on:
     - cron: "0 */6 * * *"
   # Lets you trigger it by hand from the Actions tab to test it.
   workflow_dispatch:
+  # Run once whenever this file changes, so an edit is proven on the spot.
+  push:
+    branches: [cloud-version]
+    paths: [.github/workflows/keepalive.yml]
 
 jobs:
-  ping:
+  visit:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Ping the app
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install headless Chromium
         run: |
-          # Hit the app root, which is what a real visitor loads.
-          URL="https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/"
+          python -m pip install --quiet playwright==1.48.0
+          python -m playwright install --with-deps chromium
 
-          # Streamlit Cloud answers a bare request with a 303 and sets a
-          # session cookie. A plain `curl URL` therefore reports 303 and looks
-          # like a failure. Three things make curl behave like a browser:
-          #   -L        follow the redirect
-          #   -c/-b     keep a cookie jar across the hops
-          #   -A        send a normal browser user-agent
-          UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-          JAR="$(mktemp)"
+      - name: Visit the app like a person would
+        env:
+          APP_URL: https://fishing-log-fmvre8u5mrqhfsgsfhxroj.streamlit.app/
+        shell: python
+        run: |
+          import os, sys, time
+          from playwright.sync_api import sync_playwright
 
-          for attempt in 1 2 3; do
-            code=$(curl -sSL --compressed \
-                     -A "$UA" -c "$JAR" -b "$JAR" \
-                     -o /dev/null -w '%{http_code}' \
-                     --max-time 90 "$URL" || echo "000")
-            echo "Attempt $attempt: HTTP $code"
-            case "$code" in
-              2*)
-                echo "App responded OK."
-                exit 0
-                ;;
-            esac
-            sleep 20
-          done
+          URL = os.environ["APP_URL"]
 
-          echo "::error::App did not respond with 2xx after 3 attempts (last: $code)."
-          exit 1
+          def app_rendered(page):
+              # The app runs in an iframe on Community Cloud; check every frame
+              # for Streamlit's root element.
+              for frame in page.frames:
+                  try:
+                      if frame.query_selector('[data-testid="stApp"]'):
+                          return True
+                  except Exception:
+                      pass
+              return False
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto(URL, wait_until="domcontentloaded", timeout=120_000)
+              page.wait_for_timeout(10_000)
+
+              wake = page.get_by_role("button", name="Yes, get this app back up!")
+              if wake.count() and wake.first.is_visible():
+                  print("App was asleep; clicking the wake button.")
+                  wake.first.click()
+              else:
+                  print("App was not asleep.")
+
+              # A cold start can take a few minutes.
+              deadline = time.time() + 300
+              while time.time() < deadline:
+                  if app_rendered(page):
+                      print("App rendered. Staying on it briefly so the visit registers.")
+                      page.wait_for_timeout(20_000)
+                      browser.close()
+                      sys.exit(0)
+                  page.wait_for_timeout(5_000)
+
+              text = page.inner_text("body")[:200].replace("\n", " ")
+              print(f"::error::App did not render within 5 minutes. Page says: {text}")
+              browser.close()
+              sys.exit(1)
